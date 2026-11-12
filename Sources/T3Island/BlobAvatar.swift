@@ -5,9 +5,13 @@ struct BlobAvatar: View {
     let seed: String
     let mood: ThreadMood
     var size: CGFloat = 20
+    /// Greys out a face that needs nothing now, such as a snoozed thread. Working faces always are.
+    var muted = false
     @Environment(\.usesAppKitViews) private var animates
 
     var body: some View {
+        // Working threads don't need you, so they recede in grey; everything else stays in full colour.
+        let muted = muted || mood == .working
         ZStack {
             switch mood {
             case .working where animates:
@@ -18,6 +22,8 @@ struct BlobAvatar: View {
                     .trim(from: 0.5, to: 0.8)
                     .stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: max(1, size * 0.06), lineCap: .round))
                     .frame(width: size * 0.9, height: size * 0.9)
+            case _ where muted:
+                EmptyView()
             case .needsYou where animates:
                 LoopingLayer(style: .pulse, color: NSColor(Theme.needsYou))
                     .frame(width: size * 0.92, height: size * 0.92)
@@ -28,12 +34,11 @@ struct BlobAvatar: View {
             case .replied, .idle:
                 EmptyView()
             }
-            BlobFace(profile: BlobProfile(seed: seed), mood: mood)
+            // Greyed at the source rather than with .saturation, which ImageRenderer drops from snapshots.
+            BlobFace(profile: BlobProfile(seed: seed, greyscale: muted), mood: mood)
         }
         .frame(width: size, height: size)
-        // Working threads don't need you, so they recede; everything else stays in full colour.
-        .saturation(mood == .working ? 0 : 1)
-        .opacity(mood == .working ? 0.5 : 1)
+        .opacity(muted ? 0.5 : 1)
     }
 }
 
@@ -48,11 +53,11 @@ struct BlobProfile {
     let ripples: Double, ripple: Double, ripplePhase: Double
     let aspect: Double, eyeSpread: Double
 
-    init(seed: String) {
+    init(seed: String, greyscale: Bool = false) {
         var rng = SeededRandom(seed)
         let colors = Self.palette[rng.int(Self.palette.count)]
-        base = Color(hex: colors.base)
-        light = Color(hex: colors.light)
+        base = Color(hex: colors.base, greyscale: greyscale)
+        light = Color(hex: colors.light, greyscale: greyscale)
         lobes = [2, 3, 4, 5][rng.int(4)]
         wobble = 0.035 + rng.unit() * 0.05
         phase = rng.unit() * 2 * .pi

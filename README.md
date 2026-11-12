@@ -3,10 +3,21 @@
 A small macOS app that hangs a black "island" from the top of the screen, over the notch or in the
 middle of the menu bar, showing your T3 Code threads and the usage limits of your agent CLIs.
 
+<p align="center">
+  <img src="docs/expanded-notch.png" width="680" alt="The expanded island hanging from a MacBook notch: Claude and Codex quota cards, five threads waiting on you, two working threads and a collapsed Snoozed section">
+</p>
+
+<p align="center">
+  <img src="docs/compact-notch.png" alt="The compact island around the notch: three faces for threads waiting on you plus two more, two greyed faces for working threads, and quota rings showing 84% and 100% left">
+</p>
+
 - **Compact:** on the left, faces for threads waiting on you (questions, failures, fresh replies and
   idle unsettled threads), then a divider, then the working threads, up to 3 faces each plus a count.
   On the right, one ring per provider (Claude, Codex) with the quota left in its 5-hour window
   (100% = untouched, 0% = used up); Settings can switch this to the weekly or the lowest window. The number turns amber at 40% left and red at 15%.
+  On a display without a notch it sits in the middle of the menu bar:
+
+  <img src="docs/compact.png" alt="The compact island in the middle of a menu bar on a display without a notch">
 - **Expanded:** click the island. It shows a card per provider (session and weekly windows, time to reset),
   then the threads in sections: waiting on you, working (up to 3 working rows are always kept) and snoozed.
   Click a section title to collapse or expand it, as in T3's sidebar; the choice is remembered. Click a thread to open it in T3. Move the mouse away or click elsewhere to close.
@@ -24,6 +35,10 @@ Faces follow how much a thread needs you. Needs you (amber pulse), failed, repli
 idle (your turn) are in full colour; working threads are greyed out with a spinning ring, since they need
 nothing until they finish. Each thread keeps its own blob shape and colour, derived from its id.
 
+<p align="center">
+  <img src="docs/avatars.png" width="486" alt="Eight sample faces for each state: needs you with an amber halo, failed with crossed eyes and a red halo, replied with happy eyes, idle with a flat mouth, and working in grey with a spinner">
+</p>
+
 ## Build and run
 
 Needs macOS 13+ and Xcode or the Command Line Tools.
@@ -38,8 +53,9 @@ To start it at login, run `./build-app.sh --install`, open the installed copy, a
 Settings → Launch at login. It registers the copy you turn it on from, so don't use the one in `build/`.
 
 `swift run T3Island --snapshot out/` renders the island states and an avatar gallery to PNGs
-using your live data, without opening a window. Add `--demo` to use made-up threads and limits instead,
-for screenshots you can share. `swift run T3Island --demo` runs the island itself on that data, with one
+using your live data, without opening a window. Add `--demo` to use made-up threads and limits and the default settings
+instead, for screenshots you can share; the images in this README are `swift run T3Island --snapshot docs --demo`.
+`swift run T3Island --demo` runs the island itself on that data, with one
 thread changing state every 2 s, which is handy for checking the update animations.
 
 ## Data sources

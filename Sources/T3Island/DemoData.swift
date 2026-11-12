@@ -7,9 +7,9 @@ struct DemoData {
         ("Refactor billing webhooks", "payments-api"), ("Fix flaky checkout test", "web"),
         ("Draft Q3 roadmap notes", "planning"), ("Migrate cron jobs to queues", "infra"),
         ("Review onboarding copy", "web"), ("Upgrade Postgres to 17", "infra"),
-        ("Investigate worker memory leak", "worker"),
+        ("Investigate worker memory leak", "worker"), ("Tidy up feature flags", "web"),
     ]
-    private var moods: [ThreadMood] = [.needsYou, .replied, .idle, .working, .idle, .working, .failed]
+    private var moods: [ThreadMood] = [.needsYou, .replied, .idle, .working, .idle, .working, .failed, .idle]
     private var step = 0
 
     mutating func next() -> Snapshot {
@@ -23,7 +23,8 @@ struct DemoData {
         let threads = Self.threads.enumerated().map { i, item in
             T3Thread(id: "demo-\(i)", title: item.0, project: item.1, provider: i % 3 == 2 ? "Codex" : "Claude",
                      mood: moods[i], since: now.addingTimeInterval(-Double(90 + i * 1500)),
-                     updatedAt: now.addingTimeInterval(-Double(i * 60)), snoozedUntil: nil)
+                     updatedAt: now.addingTimeInterval(-Double(i * 60)),
+                     snoozedUntil: i == 7 ? now.addingTimeInterval(2 * 3600 + 600) : nil)
         }
         return Snapshot(
             threads: threads.enumerated().sorted { ($0.element.mood, $0.offset) < ($1.element.mood, $1.offset) }.map(\.element),
