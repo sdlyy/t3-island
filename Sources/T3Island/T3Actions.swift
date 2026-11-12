@@ -27,13 +27,15 @@ actor T3Actions {
     /// Never opened: the approval answers with the redirect URL, and the code is read from it.
     private static let redirect = "http://127.0.0.1/callback"
     private static let fullAccessScopes = ["orchestration:read", "orchestration:operate", "settings:write", "source-control:write"]
+    private static let notRunning = "T3 Code isn't running."
 
     private let home: URL
     private let sessionFile: URL
     private var session: Session?
-    /// Shared by calls that arrive while signing in, so they don't each create a session in T3.
-    private var signingIn: Task<Session, Error>?
     private var mcpSession: String?
+    /// The last queued operation. Each one waits for it, so an Undo reaches T3 after the action it reverses,
+    /// and signing out waits for a sign-in in progress instead of racing it.
+    private var queue: Task<Void, Never>?
 
     init(home: URL = T3Reader.defaultHome()) {
         self.home = home
@@ -42,23 +44,35 @@ actor T3Actions {
     }
 
     func organize(_ threadId: String, _ action: Action, until: Date? = nil) async throws {
-        var arguments: [String: Any] = ["threadId": threadId, "action": action.rawValue]
-        if let until { arguments["snoozedUntil"] = ISO8601DateFormatter().string(from: until) }
-        try await call("t3_thread_organize", arguments)
+        try await enqueue {
+            var arguments: [String: Any] = ["threadId": threadId, "action": action.rawValue]
+            if let until { arguments["snoozedUntil"] = ISO8601DateFormatter().string(from: until) }
+            try await self.call("t3_thread_organize", arguments)
+        }
     }
 
     /// Forgets the token and revokes the island's sessions in T3.
     func signOut() async {
-        session = nil
-        mcpSession = nil
-        try? FileManager.default.removeItem(at: sessionFile)
-        guard let data = try? await cli(["auth", "session", "list", "--json"]),
-              let sessions = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        else { return }
-        for item in sessions where item["subject"] as? String == "mcp-client"
-            && (item["client"] as? [String: Any])?["label"] as? String == Self.clientName {
-            if let id = item["sessionId"] as? String { _ = try? await cli(["auth", "session", "revoke", id]) }
+        try? await enqueue {
+            await self.forget()
+            guard let data = try? await self.cli(["auth", "session", "list", "--json"]),
+                  let sessions = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+            else { return }
+            for item in sessions where item["subject"] as? String == "mcp-client"
+                && (item["client"] as? [String: Any])?["label"] as? String == Self.clientName {
+                if let id = item["sessionId"] as? String { _ = try? await self.cli(["auth", "session", "revoke", id]) }
+            }
         }
+    }
+
+    private func enqueue(_ operation: @escaping @Sendable () async throws -> Void) async throws {
+        let previous = queue
+        let task = Task {
+            await previous?.value
+            try await operation()
+        }
+        queue = Task { _ = await task.result }
+        try await task.value
     }
 
     // MARK: MCP
@@ -75,13 +89,14 @@ actor T3Actions {
         }
         switch status {
         case 200:
-            let result = Self.message(in: body)?["result"] as? [String: Any]
-            if result?["isError"] as? Bool == true {
-                let text = ((result?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+            let result = try Self.result(in: body)
+            if result["isError"] as? Bool == true {
+                let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
                 let failure = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
                 throw Failure(message: failure?["message"] as? String ?? (text.isEmpty ? "T3 refused." : text))
             }
-        case 401 where session.expiresAt < Date().addingTimeInterval(3600) && !retried:
+        case 401 where session.expiresAt <= Date().addingTimeInterval(60) && !retried:
+            // Expired, give or take clock drift: sign in again. Any other 401 means it was revoked in T3.
             forget()
             try await call(tool, arguments, retried: true)
         case 401:
@@ -98,12 +113,13 @@ actor T3Actions {
 
     /// Starts an MCP session and returns T3's HTTP status, so `call` handles a rejected token in one place.
     private func initialize(_ session: Session) async throws -> Int {
-        let (status, _, headers) = try await send(session, [
+        let (status, body, headers) = try await send(session, [
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": ["protocolVersion": "2025-06-18", "capabilities": [:] as [String: Any],
                        "clientInfo": ["name": "t3-island", "version": "1.0"]],
         ], mcpSession: nil)
         guard status == 200 else { return status }
+        _ = try Self.result(in: body)
         mcpSession = headers["mcp-session-id"]
         _ = try await send(session, ["jsonrpc": "2.0", "method": "notifications/initialized"], mcpSession: mcpSession)
         return status
@@ -124,20 +140,28 @@ actor T3Actions {
         request.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
         request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
         if let mcpSession { request.setValue(mcpSession, forHTTPHeaderField: "Mcp-Session-Id") }
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let http = response as? HTTPURLResponse
+        let (data, http) = try await fetch(request)
         var headers: [String: String] = [:]
-        for (key, value) in http?.allHeaderFields ?? [:] {
+        for (key, value) in http.allHeaderFields {
             if let key = key as? String, let value = value as? String { headers[key.lowercased()] = value }
         }
-        return (http?.statusCode ?? 0, data, headers)
+        return (http.statusCode, data, headers)
     }
 
-    /// The JSON-RPC message in a plain JSON or server-sent-events response.
-    private static func message(in body: Data) -> [String: Any]? {
+    /// The `result` of a JSON-RPC reply, sent as plain JSON or as server-sent events.
+    private static func result(in body: Data) throws -> [String: Any] {
         let text = String(decoding: body, as: UTF8.self)
-        let json = text.split(separator: "\n").last { $0.hasPrefix("data:") }.map { String($0.dropFirst(5)) } ?? text
-        return (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+        let json = text.split(whereSeparator: \.isNewline).last { $0.hasPrefix("data:") }.map { String($0.dropFirst(5)) } ?? text
+        guard let message = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] else {
+            throw Failure(message: "T3 sent a reply the island couldn't read.")
+        }
+        if let error = message["error"] as? [String: Any] {
+            throw Failure(message: error["message"] as? String ?? "T3 refused.")
+        }
+        guard let result = message["result"] as? [String: Any] else {
+            throw Failure(message: "T3 sent a reply the island couldn't read.")
+        }
+        return result
     }
 
     // MARK: Signing in
@@ -149,13 +173,10 @@ actor T3Actions {
             session = saved
             return saved
         }
-        if let signingIn { return try await signingIn.value }
-        let task = Task { try await signIn() }
-        signingIn = task
-        defer { signingIn = nil }
-        let signedIn = try await task.value
-        session = signedIn
-        return signedIn
+        let fresh = try await signIn()
+        try save(fresh)
+        session = fresh
+        return fresh
     }
 
     private func signIn() async throws -> Session {
@@ -193,15 +214,12 @@ actor T3Actions {
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data((form.percentEncodedQuery ?? "").utf8)
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, _) = try await fetch(request)
         let token = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         guard let accessToken = token?["access_token"] as? String else {
             throw Failure(message: token?["error_description"] as? String ?? "T3 didn't issue a token.")
         }
-        let saved = Session(token: accessToken,
-                            expiresAt: Date().addingTimeInterval(token?["expires_in"] as? Double ?? 86400))
-        try save(saved)
-        return saved
+        return Session(token: accessToken, expiresAt: Date().addingTimeInterval(token?["expires_in"] as? Double ?? 86400))
     }
 
     private func forget() {
@@ -225,22 +243,36 @@ actor T3Actions {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, http) = try await fetch(request)
         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        guard (200..<300).contains(http.statusCode) else {
             throw Failure(message: object["message"] as? String ?? object["error_description"] as? String
                 ?? "T3 refused to sign the island in.")
         }
         return object
     }
 
-    /// The running server, from the file T3 writes when it starts.
+    private func fetch(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw Failure(message: "T3 sent a reply the island couldn't read.") }
+            return (data, http)
+        } catch let error as URLError where [.cannotConnectToHost, .cannotFindHost, .networkConnectionLost].contains(error.code) {
+            // T3 leaves its runtime file behind when it quits.
+            throw Failure(message: Self.notRunning)
+        }
+    }
+
+    /// The running server, from the file T3 writes when it starts. The token only ever goes to this Mac.
     private func origin() throws -> URL {
         let file = home.appendingPathComponent("userdata/server-runtime.json")
         guard let data = try? Data(contentsOf: file),
               let runtime = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let origin = (runtime["origin"] as? String).flatMap(URL.init(string:))
-        else { throw Failure(message: "T3 Code isn't running.") }
+        else { throw Failure(message: Self.notRunning) }
+        guard ["127.0.0.1", "localhost", "::1"].contains(origin.host ?? "") else {
+            throw Failure(message: "T3's server isn't on this Mac, so the island won't sign in to it.")
+        }
         return origin
     }
 
@@ -255,7 +287,8 @@ actor T3Actions {
         return credential
     }
 
-    /// Runs T3's `t3` command-line tool, which T3 Code installs in its home folder.
+    /// Runs T3's `t3` command-line tool, which T3 Code installs in its home folder. Stopped after 15 s,
+    /// so a stuck tool can't hold up every later action.
     private func cli(_ arguments: [String]) async throws -> Data {
         let tool = home.appendingPathComponent("bin/t3")
         guard FileManager.default.isExecutableFile(atPath: tool.path) else {
@@ -268,15 +301,19 @@ actor T3Actions {
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         try process.run()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 15) {
+            if process.isRunning { process.terminate() }
+        }
         // Read while it runs, so a long output can't fill the pipe and stall it.
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
-                if process.terminationStatus == 0 {
+                if process.terminationStatus == 0 && process.terminationReason == .exit {
                     continuation.resume(returning: data)
                 } else {
-                    continuation.resume(throwing: Failure(message: "T3's command-line tool failed."))
+                    continuation.resume(throwing: Failure(message: process.terminationReason == .uncaughtSignal
+                        ? "T3's command-line tool didn't answer." : "T3's command-line tool failed."))
                 }
             }
         }

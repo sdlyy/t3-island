@@ -39,9 +39,11 @@ final class Store: ObservableObject {
     private var timer: Timer?
     private var inFlight = false
     private var demo: DemoData?
-    /// T3's threads as shown, before the island's own changes.
+    /// T3's threads as shown, before the island's own changes, and when they were read.
     private var raw: [T3Thread] = []
-    private var changes: [String: (change: ThreadChange, at: Date)] = [:]
+    private var rawAt = Date.distantPast
+    /// The island's own changes. `done` is when T3 accepted one; only a snapshot read after that can confirm it.
+    private var changes: [String: (change: ThreadChange, at: Date, done: Date?)] = [:]
     /// The row under the pointer. T3's updates wait while it's set, so rows don't move under a click,
     /// and land on the next refresh after it clears, not in the middle of an action.
     private var heldBy: String?
@@ -59,27 +61,44 @@ final class Store: ObservableObject {
 
     func refresh() {
         if let snap = demo?.next() {
-            return apply(snap)
+            return apply(snap, readAt: Date())
         }
         guard !inFlight else { return }
         inFlight = true
         let reader = reader
+        let readAt = Date()
         queue.async {
             let snap = reader.snapshot()
             DispatchQueue.main.async { [weak self] in
                 self?.inFlight = false
-                self?.apply(snap)
+                self?.apply(snap, readAt: readAt)
             }
         }
     }
 
-    private func apply(_ snap: Snapshot) {
-        if heldBy == nil {
+    private func apply(_ snap: Snapshot, readAt: Date) {
+        if heldBy == nil || Self.sameLayout(raw, snap.threads) {
             raw = snap.threads
+            rawAt = readAt
+            publishThreads(motion: Theme.shuffle)
+        } else if let id = heldBy, let i = raw.firstIndex(where: { $0.id == id }),
+                  let fresh = snap.threads.first(where: { $0.id == id }), Self.section(fresh) == Self.section(raw[i]) {
+            // The rows stay put, but the one under the pointer still shows what changed, such as a new question.
+            raw[i] = fresh
             publishThreads(motion: Theme.shuffle)
         }
         if providers != snap.providers { providers = snap.providers }
         if problem != snap.problem { problem = snap.problem }
+    }
+
+    /// The dropdown section a thread sits in: working, waiting on you or snoozed.
+    private static func section(_ thread: T3Thread) -> Int {
+        thread.mood == .working ? 0 : thread.snoozedUntil == nil ? 1 : 2
+    }
+
+    /// Same rows in the same order and sections, so an update changes what rows say but moves none of them.
+    private static func sameLayout(_ a: [T3Thread], _ b: [T3Thread]) -> Bool {
+        a.count == b.count && zip(a, b).allSatisfy { $0.id == $1.id && section($0) == section($1) }
     }
 
     // MARK: Actions
@@ -122,9 +141,9 @@ final class Store: ObservableObject {
     }
 
     private func perform(_ thread: T3Thread, _ change: ThreadChange, notice text: String, undoable: Bool = true) {
-        let index = threads.firstIndex { $0.id == thread.id } ?? 0
+        let index = raw.firstIndex { $0.id == thread.id } ?? 0
         if heldBy == thread.id { heldBy = nil }
-        changes[thread.id] = (change, Date())
+        changes[thread.id] = (change, Date(), nil)
         publishThreads(motion: Theme.act)
         let notice = ActionNotice(text: text, undo: undoable ? (thread, change, index) : nil)
         show(notice)
@@ -138,6 +157,7 @@ final class Store: ObservableObject {
                 case .snoozed(let until): try await actions.organize(thread.id, .snooze, until: until)
                 case .woke: try await actions.organize(thread.id, .unsnooze)
                 }
+                if changes[thread.id]?.change == change { changes[thread.id]?.done = Date() }
             } catch {
                 if changes[thread.id]?.change == change { changes[thread.id] = nil }
                 publishThreads(motion: Theme.act)
@@ -158,18 +178,22 @@ final class Store: ObservableObject {
         }
     }
 
-    /// T3's threads with the island's own changes on top, until T3 shows them or they time out.
+    /// T3's threads with the island's own changes on top, until a snapshot read after T3 accepted a change
+    /// shows it, or 20 s pass.
     private func publishThreads(motion: Animation) {
         let byId = Dictionary(raw.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         changes = changes.filter { id, entry in
             if demo != nil { return true }
             guard Date().timeIntervalSince(entry.at) < 20 else { return false }
+            guard let done = entry.done, rawAt > done else { return true }
+            let shown: Bool
             switch entry.change {
-            case .settled: return byId[id] != nil
-            case .unsettled: return byId[id] == nil
-            case .snoozed: return byId[id]?.snoozedUntil == nil
-            case .woke: return byId[id]?.snoozedUntil != nil
+            case .settled: shown = byId[id] == nil
+            case .unsettled: shown = byId[id] != nil
+            case .snoozed: shown = byId[id]?.snoozedUntil != nil
+            case .woke: shown = byId[id]?.snoozedUntil == nil
             }
+            return !shown
         }
 
         var list = raw

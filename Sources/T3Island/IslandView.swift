@@ -619,6 +619,12 @@ private struct ThreadRow: View {
             }
         }
         .onDisappear { onHover(false) }
+        // A row that's still here a moment after reacting means the action failed and it came back.
+        .task(id: reaction) {
+            guard reaction != nil else { return }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            reaction = nil
+        }
         .transition(.asymmetric(insertion: .opacity, removal: exit))
     }
 
@@ -731,7 +737,10 @@ private struct SnoozeChoices: View {
         } ?? now.addingTimeInterval(86400)
         var monday = morning
         monday.weekday = 2
-        let nextWeek = calendar.nextDate(after: now, matching: monday, matchingPolicy: .nextTime) ?? now.addingTimeInterval(7 * 86400)
+        // From tomorrow, so on a Monday morning it means next Monday, not later today.
+        let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) ?? now
+        let nextWeek = calendar.nextDate(after: startOfTomorrow, matching: monday, matchingPolicy: .nextTime)
+            ?? now.addingTimeInterval(7 * 86400)
         return [
             ("1h", now.addingTimeInterval(3600)), ("3h", now.addingTimeInterval(3 * 3600)),
             ("Tomorrow", tomorrow), ("Next week", nextWeek),
