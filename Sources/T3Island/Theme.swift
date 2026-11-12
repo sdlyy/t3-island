@@ -16,7 +16,7 @@ enum Theme {
     static func mood(_ mood: ThreadMood) -> Color {
         switch mood {
         case .needsYou: needsYou
-        case .working: muted
+        case .working, .waiting: muted
         case .replied: replied
         case .failed: failed
         case .idle: primary

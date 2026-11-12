@@ -5,7 +5,11 @@ import SQLite3
 
 /// Ordered by how much the thread needs you: working threads need nothing until they finish.
 enum ThreadMood: Int, Comparable {
-    case needsYou, failed, replied, idle, working
+    /// `waiting`: the turn ended, but the thread is waiting on its own agents or a watched pull request.
+    case needsYou, failed, replied, idle, working, waiting
+
+    /// Doesn't need you now: it's working, or waiting on something other than you.
+    var isBusy: Bool { self == .working || self == .waiting }
 
     static func < (a: ThreadMood, b: ThreadMood) -> Bool { a.rawValue < b.rawValue }
 
@@ -16,6 +20,7 @@ enum ThreadMood: Int, Comparable {
         case .replied: "Replied"
         case .failed: "Failed"
         case .idle: "Idle"
+        case .waiting: "Waiting"
         }
     }
 }
@@ -31,6 +36,15 @@ struct T3Thread: Identifiable, Equatable {
     let updatedAt: Date
     /// Set while the thread is snoozed in T3; it doesn't need you until then.
     var snoozedUntil: Date?
+    /// What a waiting thread waits on, such as "2 agents" or "PR #12".
+    var waitingOn: String? = nil
+    /// What it's saying or doing: the latest step while it works, its question, its error, or the start
+    /// of its last reply. Read only while the dropdown is open.
+    var line: String? = nil
+
+    var status: String {
+        mood == .waiting ? "Waiting on \(waitingOn ?? "work")" : mood.label
+    }
 }
 
 struct LimitWindow: Identifiable, Equatable {
@@ -102,12 +116,13 @@ final class T3Reader: @unchecked Sendable {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".t3")
     }
 
-    func snapshot() -> Snapshot {
+    /// `lines`: also read each thread's latest line, which costs a query per thread.
+    func snapshot(lines: Bool = false) -> Snapshot {
         var snap = Snapshot()
         snap.providers = readProviders()
         let names = Dictionary(snap.providers.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
         do {
-            snap.threads = try readThreads(providerNames: names)
+            snap.threads = try readThreads(providerNames: names, lines: lines)
         } catch {
             snap.problem = "\(error)"
             sqlite3_close(db)
@@ -208,18 +223,25 @@ final class T3Reader: @unchecked Sendable {
                  json_extract(payload_json, '$.lastVisitedAt') AS visited_at,
                  json_extract(payload_json, '$.settledAt') AS settled_at,
                  json_extract(payload_json, '$.snoozedUntil') AS snoozed_until,
-                 json_extract(payload_json, '$.snoozedAt') AS snoozed_at
+                 json_extract(payload_json, '$.snoozedAt') AS snoozed_at,
+                 json_extract(payload_json, '$.pullRequests') AS prs
           FROM orchestration_v2_projection_threads
           WHERE archived_at IS NULL AND deleted_at IS NULL
             AND COALESCE(json_extract(payload_json, '$.lineage.relationshipToParent'), '') <> 'subagent'
         ),
         x AS (
-          SELECT t.*, p.title AS project, r.status AS run_status, r.requested_at, r.completed_at,
+          SELECT t.*, p.title AS project, r.run_id, r.status AS run_status, r.requested_at, r.completed_at,
                  (SELECT COUNT(*) FROM orchestration_v2_projection_runtime_requests q
                    WHERE q.thread_id = t.thread_id AND q.status = 'pending') AS pending,
                  (SELECT COUNT(*) FROM orchestration_v2_projection_runtime_requests q
                    WHERE q.thread_id = t.thread_id AND q.status = 'pending'
-                     AND (q.kind <> 'user_input' OR t.snoozed_at IS NULL OR q.created_at > t.snoozed_at)) AS waking
+                     AND (q.kind <> 'user_input' OR t.snoozed_at IS NULL OR q.created_at > t.snoozed_at)) AS waking,
+                 -- Delegated agents still running. The conditions repeat T3's partial index, so it's used.
+                 (SELECT COUNT(*) FROM orchestration_v2_projection_turn_items i
+                   WHERE i.thread_id = t.thread_id AND i.type IN ('command_execution', 'dynamic_tool', 'subagent')
+                     AND i.status IN ('pending', 'running', 'waiting') AND i.type = 'subagent') AS agents,
+                 (SELECT json_extract(value, '$.number') FROM json_each(t.prs)
+                   WHERE json_extract(value, '$.watch') IS NOT NULL LIMIT 1) AS watched_pr
           FROM t
           LEFT JOIN projection_projects p ON p.project_id = t.project_id
           LEFT JOIN orchestration_v2_projection_runs r ON r.thread_id = t.thread_id
@@ -227,7 +249,8 @@ final class T3Reader: @unchecked Sendable {
                              WHERE r2.thread_id = t.thread_id)
         )
         SELECT thread_id, title, COALESCE(project, ''), provider, updated_at, visited_at,
-               run_status, requested_at, completed_at, pending, snoozed_until, snoozed_at, waking
+               run_status, requested_at, completed_at, pending, snoozed_until, snoozed_at, waking,
+               agents, watched_pr, run_id
         FROM x
         WHERE settled_at IS NULL
            OR pending > 0
@@ -256,7 +279,7 @@ final class T3Reader: @unchecked Sendable {
         return handle
     }
 
-    private func readThreads(providerNames: [String: String]) throws -> [T3Thread] {
+    private func readThreads(providerNames: [String: String], lines: Bool) throws -> [T3Thread] {
         let db = try openIfNeeded()
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, Self.threadsSQL, -1, &stmt, nil) == SQLITE_OK else {
@@ -282,6 +305,9 @@ final class T3Reader: @unchecked Sendable {
             let pending = sqlite3_column_int(stmt, 9)
             let snoozedUntil = date(text(10))
             let snoozedAt = date(text(11))
+            let agents = Int(sqlite3_column_int(stmt, 13))
+            let watchedPR = text(14)
+            let waitingOn = agents > 0 ? (agents == 1 ? "1 agent" : "\(agents) agents") : watchedPR.map { "PR #\($0)" }
 
             let mood: ThreadMood
             switch runStatus {
@@ -289,12 +315,19 @@ final class T3Reader: @unchecked Sendable {
             case "waiting": mood = .needsYou
             case "queued", "preparing", "starting", "running": mood = .working
             case "failed": mood = .failed
+            // The turn ended to wait for agents or pull request checks, so it isn't your turn yet.
+            case _ where waitingOn != nil: mood = .waiting
             case "completed" where (completedAt ?? .distantPast) > (visitedAt ?? .distantPast): mood = .replied
             default: mood = .idle
             }
 
+            let id = text(0) ?? UUID().uuidString
+            let line = lines ? text(15).flatMap { runId in
+                self.line(db, threadId: id, runId: runId, mood: mood,
+                          key: "\(runId)|\(runStatus ?? "")|\(mood.rawValue)|\(text(4) ?? "")")
+            } : nil
             threads.append(T3Thread(
-                id: text(0) ?? UUID().uuidString,
+                id: id,
                 title: text(1) ?? "Untitled",
                 project: text(2) ?? "",
                 provider: providerNames[provider] ?? provider,
@@ -302,13 +335,113 @@ final class T3Reader: @unchecked Sendable {
                 since: mood == .working || mood == .needsYou ? requestedAt : completedAt,
                 updatedAt: date(text(4)) ?? .distantPast,
                 snoozedUntil: Self.isSnoozed(until: snoozedUntil, at: snoozedAt, wakingRequests: sqlite3_column_int(stmt, 12),
-                                             runStatus: runStatus, completedAt: completedAt) ? snoozedUntil : nil
+                                             runStatus: runStatus, completedAt: completedAt) ? snoozedUntil : nil,
+                waitingOn: mood == .waiting ? waitingOn : nil,
+                line: line
             ))
         }
         // Stable sort: attention first, newest first within a mood.
         return threads.enumerated()
             .sorted { ($0.element.mood, $0.offset) < ($1.element.mood, $1.offset) }
             .map(\.element)
+    }
+
+    // MARK: Lines
+
+    /// Lines of threads that aren't working change only with their run, so they're kept by run and status.
+    private var lineCache: [String: (key: String, line: String?)] = [:]
+
+    /// Reads the few newest steps of the thread's latest run that can say what's going on now.
+    private func line(_ db: OpaquePointer, threadId: String, runId: String, mood: ThreadMood, key: String) -> String? {
+        if mood != .working, let cached = lineCache[threadId], cached.key == key { return cached.line }
+        let types: [String]
+        switch mood {
+        case .working:
+            types = ["assistant_message", "reasoning", "command_execution", "dynamic_tool", "file_change", "web_search",
+                     "todo_list", "subagent", "user_message"]
+        case .needsYou: types = ["user_input_request", "assistant_message"]
+        case .failed: types = ["error", "assistant_message"]
+        default: types = ["assistant_message"]
+        }
+        let sql = """
+            SELECT type,
+              CASE WHEN type = 'assistant_message' THEN substr(json_extract(payload_json, '$.text'), 1, 600) END,
+              CASE WHEN type = 'assistant_message' THEN substr(json_extract(payload_json, '$.text'), -600) END,
+              CASE type
+                WHEN 'command_execution' THEN substr(json_extract(payload_json, '$.input'), 1, 300)
+                WHEN 'dynamic_tool' THEN coalesce(json_extract(payload_json, '$.title'), json_extract(payload_json, '$.toolName'))
+                WHEN 'file_change' THEN json_extract(payload_json, '$.fileName')
+                WHEN 'web_search' THEN json_extract(payload_json, '$.patterns[0]')
+                WHEN 'user_input_request' THEN json_extract(payload_json, '$.questions[0].question')
+                WHEN 'error' THEN substr(json_extract(payload_json, '$.failure.message'), 1, 300)
+                WHEN 'user_message' THEN substr(json_extract(payload_json, '$.text'), 1, 300)
+                WHEN 'subagent' THEN json_extract(payload_json, '$.title')
+                WHEN 'todo_list' THEN (SELECT json_extract(value, '$.text') FROM json_each(payload_json, '$.steps')
+                                       WHERE json_extract(value, '$.status') NOT IN ('completed', 'pending') LIMIT 1)
+              END
+            FROM orchestration_v2_projection_turn_items
+            WHERE thread_id = ?1 AND run_id = ?2 AND type IN (\(types.map { "'\($0)'" }.joined(separator: ", ")))
+            ORDER BY ordinal DESC LIMIT 4
+            """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, threadId, -1, Self.transient)
+        sqlite3_bind_text(stmt, 2, runId, -1, Self.transient)
+        var result: String?
+        while result == nil, sqlite3_step(stmt) == SQLITE_ROW {
+            func text(_ i: Int32) -> String? { sqlite3_column_text(stmt, i).map { String(cString: $0) } }
+            result = Self.describe(type: text(0) ?? "", head: text(1), tail: text(2), detail: text(3), live: mood == .working)
+        }
+        lineCache[threadId] = (key, result)
+        return result
+    }
+
+    private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+    /// One plain line for a step. `live`: the newest line of a reply being written, rather than its first.
+    static func describe(type: String, head: String?, tail: String?, detail: String?, live: Bool) -> String? {
+        switch type {
+        case "assistant_message":
+            let raw = ((live ? tail : head) ?? "").split(whereSeparator: \.isNewline).map(String.init)
+            if live { return raw.compactMap { plain($0) }.last }
+            // A reply that opens with a heading ("## Verdict") says more in its first sentence.
+            let isHeading = { (line: String) -> Bool in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return trimmed.hasPrefix("#") || (trimmed.hasPrefix("**") && trimmed.hasSuffix("**"))
+            }
+            return raw.filter { !isHeading($0) }.lazy.compactMap { plain($0) }.first ?? raw.lazy.compactMap { plain($0) }.first
+        case "reasoning": return "Thinking…"
+        case "command_execution":
+            return detail.flatMap { plain(String($0.split(whereSeparator: \.isNewline).first ?? ""), command: true) }
+                .map { "$ \($0)" }
+        case "dynamic_tool": return detail.flatMap { plain($0) }
+        case "file_change": return detail.map { "Edited \(URL(fileURLWithPath: $0).lastPathComponent)" }
+        case "web_search": return detail.map { "Searching “\($0)”" }
+        case "user_message": return detail.flatMap { plain(String($0.split(whereSeparator: \.isNewline).first ?? "")) }
+            .map { "You: \($0)" }
+        case "subagent": return detail.map { "Agent: \($0)" }
+        case "user_input_request", "error", "todo_list":
+            return detail.flatMap { plain(String($0.split(whereSeparator: \.isNewline).first ?? "")) }
+        default: return nil
+        }
+    }
+
+    /// Markdown and long paths stripped, so a line reads as text in a small row. Nil for an empty line or a fence.
+    static func plain(_ line: String, command: Bool = false) -> String? {
+        var text = line.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, !text.hasPrefix("```") else { return nil }
+        if command {
+            // Agents start most commands by changing into the project folder, which says nothing here.
+            text = text.replacingOccurrences(of: #"^cd\s+\S+\s*&&\s*"#, with: "", options: .regularExpression)
+        } else {
+            text = text.replacingOccurrences(of: #"^(#+|>|[-*+]|\d+[.)])\s+"#, with: "", options: .regularExpression)
+            text = text.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            text = text.replacingOccurrences(of: #"\*\*|__|`"#, with: "", options: .regularExpression)
+        }
+        text = text.replacingOccurrences(of: #"(?:~|/[^\s/]+)(?:/[^\s/]+)*/([^\s/]+)"#, with: "$1", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return text.isEmpty ? nil : String(text.prefix(200))
     }
 
     /// T3's own rule (isSnoozed in its server): a snooze holds until its time, unless a new question

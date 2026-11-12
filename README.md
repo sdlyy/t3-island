@@ -4,7 +4,7 @@ A small macOS app that hangs a black "island" from the top of the screen, over t
 middle of the menu bar, showing your T3 Code threads and the usage limits of your agent CLIs.
 
 <p align="center">
-  <img src="docs/expanded-notch.png" width="680" alt="The expanded island hanging from a MacBook notch: Claude and Codex quota cards, five threads waiting on you, two working threads and a collapsed Snoozed section">
+  <img src="docs/expanded-notch.png" width="680" alt="The expanded island hanging from a MacBook notch: Claude and Codex quota cards, five threads waiting on you, two working threads and a collapsed Snoozed section, each thread with a live line of what it last said or did">
 </p>
 
 <p align="center">
@@ -20,6 +20,11 @@ middle of the menu bar, showing your T3 Code threads and the usage limits of you
   <img src="docs/compact.png" alt="The compact island in the middle of a menu bar on a display without a notch">
 - **Expanded:** click the island. It shows a card per provider (session and weekly windows, time to reset),
   then the threads in sections: waiting on you, working (up to 3 working rows are always kept) and snoozed.
+  Under each title, a live line shows what the thread is saying or doing: its latest step while it works
+  (`$ swift build`, "Edited Store.swift", "Thinking…"), its question, its error, or the start of its last
+  reply. The project and model follow the title.
+  A thread whose turn ended to wait for its own agents or a watched pull request counts as working, labelled
+  "Waiting on 2 agents" or "Waiting on PR #12", since it isn't your turn yet.
   Click a section title to collapse or expand it, as in T3's sidebar; the choice is remembered. Click a thread to open it in T3. Move the mouse away or click elsewhere to close.
 - **Snooze and settle:** hover a thread waiting on you to snooze it (1 hour, 3 hours, tomorrow at 9 or next
   Monday at 9) or settle it, and hover a snoozed thread to wake it. The face reacts first: it falls asleep, or
@@ -38,10 +43,11 @@ Changes apply immediately and are saved in UserDefaults (`defaults delete local.
 
 Faces follow how much a thread needs you. Needs you (amber pulse), failed, replied (unread result) and
 idle (your turn) are in full colour; working threads are greyed out with a spinning ring, since they need
-nothing until they finish. Each thread keeps its own blob shape and colour, derived from its id.
+nothing until they finish, and threads waiting on agents or checks are greyed out with a still dashed ring.
+Each thread keeps its own blob shape and colour, derived from its id.
 
 <p align="center">
-  <img src="docs/avatars.png" width="486" alt="Eight sample faces for each state: needs you with an amber halo, failed with crossed eyes and a red halo, replied with happy eyes, idle with a flat mouth, and working in grey with a spinner">
+  <img src="docs/avatars.png" width="486" alt="Eight sample faces for each state: needs you with an amber halo, failed with crossed eyes and a red halo, replied with happy eyes, idle with a flat mouth, working in grey with a spinner, and waiting in grey with a dashed ring">
 </p>
 
 ## Build and run
@@ -70,7 +76,8 @@ The app reads T3 Code's local state. Its only network calls go to T3's own serve
 | What | Where |
 | --- | --- |
 | Usage limits | `~/.t3/caches/<provider>.json` → `usageLimits`, which T3 refreshes from the Claude and Codex CLIs |
-| Threads, runs, pending questions | `~/.t3/userdata/statev2.sqlite`, opened read-only and polled every 2 s |
+| Threads, runs, pending questions, running agents, watched pull requests | `~/.t3/userdata/statev2.sqlite`, opened read-only and polled every 2 s |
+| Live lines | The newest steps of each thread's latest run in the same database, read only while the dropdown is open |
 | Thread links | `t3code://threads/<environment-id>/<thread-id>` |
 | Snooze and settle | T3's `t3_thread_organize` MCP tool, at the `origin` in `~/.t3/userdata/server-runtime.json` |
 

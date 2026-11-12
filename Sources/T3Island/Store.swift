@@ -32,6 +32,8 @@ final class Store: ObservableObject {
     private(set) var motion = Theme.shuffle
     /// Called when T3 rejects the island's sign-in, so actions can be turned off.
     var onSignedOut: () -> Void = {}
+    /// Read each thread's latest line too. Only the open dropdown shows them, and they cost a query per thread.
+    var wantsLines = false
 
     private let reader = T3Reader()
     private let actions = T3Actions()
@@ -67,8 +69,9 @@ final class Store: ObservableObject {
         inFlight = true
         let reader = reader
         let readAt = Date()
+        let lines = wantsLines
         queue.async {
-            let snap = reader.snapshot()
+            let snap = reader.snapshot(lines: lines)
             DispatchQueue.main.async { [weak self] in
                 self?.inFlight = false
                 self?.apply(snap, readAt: readAt)
@@ -103,7 +106,7 @@ final class Store: ObservableObject {
 
     /// The dropdown section a thread sits in: working, waiting on you or snoozed.
     private static func section(_ thread: T3Thread) -> Int {
-        thread.mood == .working ? 0 : thread.snoozedUntil == nil ? 1 : 2
+        thread.mood.isBusy ? 0 : thread.snoozedUntil == nil ? 1 : 2
     }
 
     /// Same rows in the same order and sections, so an update changes what rows say but moves none of them.

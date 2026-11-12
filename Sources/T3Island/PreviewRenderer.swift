@@ -7,6 +7,7 @@ import SwiftUI
 enum PreviewRenderer {
     static func write(to dir: URL, demo: Bool) {
         let store = Store(demo: demo)
+        store.wantsLines = true
         store.refresh()
         RunLoop.main.run(until: Date().addingTimeInterval(1.5))
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -30,7 +31,7 @@ enum PreviewRenderer {
             save(shot, to: dir.appendingPathComponent("\(name).png"))
         }
 
-        let moods: [ThreadMood] = [.needsYou, .failed, .replied, .idle, .working]
+        let moods: [ThreadMood] = [.needsYou, .failed, .replied, .idle, .working, .waiting]
         let gallery = VStack(alignment: .leading, spacing: 10) {
             ForEach(moods, id: \.self) { mood in
                 HStack(spacing: 12) {
