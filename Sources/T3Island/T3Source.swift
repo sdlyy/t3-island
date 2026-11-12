@@ -363,6 +363,9 @@ final class T3Reader: @unchecked Sendable {
         case .failed: types = ["error", "assistant_message"]
         default: types = ["assistant_message"]
         }
+        // Working: whatever happened last. Otherwise the question or error itself, even when the agent wrote
+        // more after it; the reply is only a fallback.
+        let order = mood == .working ? "ordinal DESC" : "type = '\(types[0])' DESC, ordinal DESC"
         let sql = """
             SELECT type,
               CASE WHEN type = 'assistant_message' THEN substr(json_extract(payload_json, '$.text'), 1, 600) END,
@@ -381,7 +384,7 @@ final class T3Reader: @unchecked Sendable {
               END
             FROM orchestration_v2_projection_turn_items
             WHERE thread_id = ?1 AND run_id = ?2 AND type IN (\(types.map { "'\($0)'" }.joined(separator: ", ")))
-            ORDER BY ordinal DESC LIMIT 4
+            ORDER BY \(order) LIMIT 4
             """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
