@@ -38,7 +38,9 @@ To start it at login, run `./build-app.sh --install`, open the installed copy, a
 Settings → Launch at login. It registers the copy you turn it on from, so don't use the one in `build/`.
 
 `swift run T3Island --snapshot out/` renders the island states and an avatar gallery to PNGs
-using your live data, without opening a window.
+using your live data, without opening a window. Add `--demo` to use made-up threads and limits instead,
+for screenshots you can share. `swift run T3Island --demo` runs the island itself on that data, with one
+thread changing state every 2 s, which is handy for checking the update animations.
 
 ## Data sources
 

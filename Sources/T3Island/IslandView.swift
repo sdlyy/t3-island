@@ -52,6 +52,8 @@ struct IslandView: View {
         .clipShape(shape)
         .background(shape.fill(Theme.island).shadow(color: .black.opacity(expanded ? 0.45 : 0), radius: 14, y: 4))
         .onGeometryChange(for: CGSize.self, of: \.size) { state.shapeSize = $0 }
+        // Thread updates shuffle faces, rows and the island's outline together.
+        .animation(Theme.shuffle, value: store.threads)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .ignoresSafeArea()
     }
@@ -77,7 +79,9 @@ private struct CompactIsland: View {
             ThreadGlance(threads: settings.value.visible(store.threads), settings: settings.value,
                          size: min(20, notch.height - 6))
                 .fixedSize()
-                .onGeometryChange(for: CGFloat.self, of: \.size.width) { leftWidth = $0 }
+                .onGeometryChange(for: CGFloat.self, of: \.size.width) { width in
+                    withAnimation(Theme.shuffle) { leftWidth = width }
+                }
                 .frame(width: ear, alignment: .trailing)
                 .padding(.trailing, 6)
             Color.clear.frame(width: notch.hasNotch ? notch.width : 4)
@@ -97,6 +101,8 @@ private struct ThreadGlance: View {
     let threads: [T3Thread]
     let settings: IslandSettings
     let size: CGFloat
+    /// Lets a face slide across when its thread moves between the waiting and working groups.
+    @Namespace private var faces
 
     var body: some View {
         let working = settings.showWorking ? threads.filter { $0.mood == .working } : []
@@ -122,12 +128,15 @@ private struct ThreadGlance: View {
             HStack(spacing: -size * 0.3) {
                 ForEach(threads.prefix(settings.facesPerGroup)) { thread in
                     BlobAvatar(seed: thread.id, mood: thread.mood, size: size)
+                        .matchedGeometryEffect(id: thread.id, in: faces)
+                        .transition(.scale(scale: 0.3).combined(with: .opacity))
                 }
             }
             if threads.count > settings.facesPerGroup {
                 Text("+\(threads.count - settings.facesPerGroup)")
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundStyle(Theme.secondary)
+                    .transition(.opacity)
             }
         }
     }
@@ -188,6 +197,8 @@ private struct ExpandedIsland: View {
     let onOpen: (T3Thread?) -> Void
     let onSettings: () -> Void
     @EnvironmentObject private var settings: SettingsStore
+    /// Lets a row slide between sections when its thread changes state.
+    @Namespace private var rows
 
     private static let maxRows = 7
     /// Rows kept for working threads, so a long list of waiting ones can't push them out.
@@ -242,6 +253,7 @@ private struct ExpandedIsland: View {
                         }
                         ForEach(waiting.prefix(waitingShown)) { thread in
                             ThreadRow(thread: thread, now: now) { onOpen(thread) }
+                                .matchedGeometryEffect(id: thread.id, in: rows)
                         }
                     }
                     if !working.isEmpty {
@@ -251,6 +263,7 @@ private struct ExpandedIsland: View {
                         .padding(.top, waiting.isEmpty ? 0 : 6)
                         ForEach(working.prefix(workingShown)) { thread in
                             ThreadRow(thread: thread, now: now) { onOpen(thread) }
+                                .matchedGeometryEffect(id: thread.id, in: rows)
                         }
                     }
                     if let wake = snoozed.compactMap(\.snoozedUntil).min() {
@@ -260,6 +273,7 @@ private struct ExpandedIsland: View {
                             .padding(.top, waiting.isEmpty && working.isEmpty ? 0 : 6)
                         ForEach(snoozed.prefix(snoozedShown)) { thread in
                             ThreadRow(thread: thread, now: now) { onOpen(thread) }
+                                .matchedGeometryEffect(id: thread.id, in: rows)
                         }
                     }
                 }

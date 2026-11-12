@@ -23,6 +23,9 @@ enum Theme {
         }
     }
 
+    /// Thread updates: faces and rows slide to their new place and settle with a small overshoot.
+    static let shuffle = Animation.spring(response: 0.5, dampingFraction: 0.68)
+
     static func accent(_ provider: ProviderLimits) -> Color {
         if let hex = provider.accentHex { return Color(hex: hex) }
         return provider.id == "claudeAgent" ? Color(hex: "#E8875B") : secondary

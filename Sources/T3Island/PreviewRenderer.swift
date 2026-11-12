@@ -1,11 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// `T3Island --snapshot <dir>` renders the island with live T3 data to PNGs, without showing a window.
+/// `T3Island --snapshot <dir> [--demo]` renders the island to PNGs without showing a window,
+/// from live T3 data or, with `--demo`, from made-up threads.
 @MainActor
 enum PreviewRenderer {
-    static func write(to dir: URL) {
-        let store = Store()
+    static func write(to dir: URL, demo: Bool) {
+        let store = Store(demo: demo)
         store.refresh()
         RunLoop.main.run(until: Date().addingTimeInterval(1.5))
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
