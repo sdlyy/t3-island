@@ -21,6 +21,11 @@ middle of the menu bar, showing your T3 Code threads and the usage limits of you
 - **Expanded:** click the island. It shows a card per provider (session and weekly windows, time to reset),
   then the threads in sections: waiting on you, working (up to 3 working rows are always kept) and snoozed.
   Click a section title to collapse or expand it, as in T3's sidebar; the choice is remembered. Click a thread to open it in T3. Move the mouse away or click elsewhere to close.
+- **Snooze and settle:** hover a thread waiting on you to snooze it (1 hour, 3 hours, tomorrow at 9 or next
+  Monday at 9) or settle it, and hover a snoozed thread to wake it. The face reacts first: it falls asleep, or
+  smiles with a check. Then the row slides out. The footer offers Undo for a few seconds. Threads with an open
+  question have no shortcuts, since they need an answer in T3. While the pointer rests on a row, T3's updates
+  wait, so rows never move under a click.
 - **Footer** of the expanded island: Open T3 Code, Settings and Quit.
 
 ## Settings
@@ -29,7 +34,7 @@ Changes apply immediately and are saved in UserDefaults (`defaults delete local.
 
 - **Limits:** which window the collapsed island shows (5-hour, weekly or lowest), quota left or used, the warn (amber) and critical (red) thresholds, and which providers to show.
 - **Threads:** show working threads, threads waiting on you, idle threads, and how many faces per group.
-- **Behaviour:** open on hover instead of click, and launch at login.
+- **Behaviour:** open on hover instead of click, snooze and settle threads (on by default), and launch at login.
 
 Faces follow how much a thread needs you. Needs you (amber pulse), failed, replied (unread result) and
 idle (your turn) are in full colour; working threads are greyed out with a spinning ring, since they need
@@ -60,13 +65,14 @@ thread changing state every 2 s, which is handy for checking the update animatio
 
 ## Data sources
 
-The app only reads T3 Code's local state. It makes no network calls and reads no credentials.
+The app reads T3 Code's local state. Its only network calls go to T3's own server on this Mac, for snoozing and settling.
 
 | What | Where |
 | --- | --- |
 | Usage limits | `~/.t3/caches/<provider>.json` → `usageLimits`, which T3 refreshes from the Claude and Codex CLIs |
 | Threads, runs, pending questions | `~/.t3/userdata/statev2.sqlite`, opened read-only and polled every 2 s |
 | Thread links | `t3code://threads/<environment-id>/<thread-id>` |
+| Snooze and settle | T3's `t3_thread_organize` MCP tool, at the `origin` in `~/.t3/userdata/server-runtime.json` |
 
 Set `T3CODE_HOME` to read a different T3 data directory.
 
@@ -75,6 +81,21 @@ or has an open question. Snoozed threads follow T3's rule: they stay out until t
 new question or failure arrives after you snoozed them; the dropdown shows how many are snoozed and when the
 next one comes back. The query depends on T3's internal schema, so a T3 update can break it. When that
 happens the island shows the SQLite error in its expanded view.
+
+### Signing in to T3
+
+The first snooze or settle signs the island in to T3 as an MCP client named "T3 Island", with no browser.
+It runs `~/.t3/bin/t3 auth pairing create` for a one-time code that is valid for two minutes, then approves
+and exchanges that code through T3's MCP OAuth endpoints, the way T3 links its own environments. The sign-in
+lasts 30 days and then renews itself on the next action.
+
+T3 only lets a client change threads whose runtime mode fits its access level, and threads usually run with
+full access, so the island signs in with full access. The token is kept in
+`~/Library/Application Support/T3 Island/t3-session.json`, readable only by you. Anything running as you
+could already get the same access through the `t3` command, so this file doesn't widen what your account
+can do. Turning off Settings → Snooze and settle threads deletes the token and revokes the sign-in in T3.
+If you revoke "T3 Island" in T3's Settings → Connections instead, the next action turns the setting off, so
+the island doesn't sign itself back in.
 
 ## License
 

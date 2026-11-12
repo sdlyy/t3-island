@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        store.onSignedOut = { [settings] in settings.value.threadActions = false }
         store.start()
         island = IslandController(store: store, settings: settings)
     }

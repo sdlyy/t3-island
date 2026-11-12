@@ -30,7 +30,7 @@ struct T3Thread: Identifiable, Equatable {
     let since: Date?
     let updatedAt: Date
     /// Set while the thread is snoozed in T3; it doesn't need you until then.
-    let snoozedUntil: Date?
+    var snoozedUntil: Date?
 }
 
 struct LimitWindow: Identifiable, Equatable {

@@ -7,6 +7,8 @@ struct BlobAvatar: View {
     var size: CGFloat = 20
     /// Greys out a face that needs nothing now, such as a snoozed thread. Working faces always are.
     var muted = false
+    /// Closed eyes, for a snoozed thread.
+    var sleeping = false
     @Environment(\.usesAppKitViews) private var animates
 
     var body: some View {
@@ -35,7 +37,7 @@ struct BlobAvatar: View {
                 EmptyView()
             }
             // Greyed at the source rather than with .saturation, which ImageRenderer drops from snapshots.
-            BlobFace(profile: BlobProfile(seed: seed, greyscale: muted), mood: mood)
+            BlobFace(profile: BlobProfile(seed: seed, greyscale: muted), mood: mood, sleeping: sleeping)
         }
         .frame(width: size, height: size)
         .opacity(muted ? 0.5 : 1)
@@ -72,6 +74,7 @@ struct BlobProfile {
 private struct BlobFace: View {
     let profile: BlobProfile
     let mood: ThreadMood
+    let sleeping: Bool
 
     private static let ink = Color(white: 0.07)
 
@@ -111,6 +114,19 @@ private struct BlobFace: View {
         let w = r * 0.22, h = r * 0.3
         let line = StrokeStyle(lineWidth: max(0.9, r * 0.1), lineCap: .round)
         let mouth = CGPoint(x: c.x, y: c.y + r * 0.36)
+
+        if sleeping {
+            for side in [-1.0, 1.0] {
+                let x = c.x + side * spread
+                var lid = Path()
+                lid.move(to: CGPoint(x: x - w * 0.9, y: eyeY))
+                lid.addQuadCurve(to: CGPoint(x: x + w * 0.9, y: eyeY), control: CGPoint(x: x, y: eyeY + h * 0.75))
+                ctx.stroke(lid, with: .color(Self.ink), style: line)
+            }
+            ctx.fill(Path(ellipseIn: CGRect(x: mouth.x - r * 0.05, y: mouth.y - r * 0.05, width: r * 0.1, height: r * 0.1)),
+                     with: .color(Self.ink))
+            return
+        }
 
         for side in [-1.0, 1.0] {
             let x = c.x + side * spread
