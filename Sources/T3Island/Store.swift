@@ -179,8 +179,12 @@ final class Store: ObservableObject {
                 publishThreads(motion: Theme.act)
                 let failure = error as? T3Actions.Failure
                 if failure?.signedOut == true { onSignedOut() }
-                // Keep the notice that said why actions went off, rather than covering it.
-                if failure?.actionsOff == true { return }
+                // Keep the notice that said why actions went off, rather than covering it, and take back
+                // this action's own success notice if it's still showing.
+                if failure?.actionsOff == true {
+                    if self.notice?.id == notice.id { self.notice = nil }
+                    return
+                }
                 show(ActionNotice(text: failure?.signedOut == true
                     ? "T3 signed the island out, so actions are off. Turn them on in Settings to sign in again."
                     : "Couldn't do that: \(error.localizedDescription)", isError: true))
