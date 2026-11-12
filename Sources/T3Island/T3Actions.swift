@@ -15,6 +15,8 @@ actor T3Actions {
         let message: String
         /// T3 rejected a token that hadn't expired, so it was revoked there.
         var signedOut = false
+        /// Refused because actions are off; whatever turned them off has already said so.
+        var actionsOff = false
         var errorDescription: String? { message }
     }
 
@@ -90,8 +92,11 @@ actor T3Actions {
 
     // MARK: MCP
 
-    private func call(_ tool: String, _ arguments: [String: Any], retried: Bool = false) async throws {
+    /// Retries once for an ended MCP session and once for an expired token, each on its own.
+    private func call(_ tool: String, _ arguments: [String: Any],
+                      retriedSession: Bool = false, retriedAuth: Bool = false) async throws {
         let session = try await signedIn()
+        let hadSession = mcpSession != nil
         var status = mcpSession == nil ? try await initialize(session) : 200
         var body = Data()
         if status == 200 {
@@ -108,19 +113,19 @@ actor T3Actions {
                 let failure = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
                 throw Failure(message: failure?["message"] as? String ?? (text.isEmpty ? "T3 refused." : text))
             }
-        case 401 where session.expiresAt <= Date().addingTimeInterval(60) && !retried:
+        case 401 where session.expiresAt <= Date().addingTimeInterval(60) && !retriedAuth:
             // Expired, give or take clock drift: sign in again. Any other 401 means it was revoked in T3.
             forget()
-            try await call(tool, arguments, retried: true)
+            try await call(tool, arguments, retriedSession: retriedSession, retriedAuth: true)
         case 401:
             enabled = false
             forget()
             throw Failure(message: "T3 signed the island out.", signedOut: true)
         case 400, 404:
             // The MCP session ended, for example when T3 restarted. Transports answer 400 or 404 for that.
-            guard mcpSession != nil, !retried else { fallthrough }
+            guard hadSession, !retriedSession else { fallthrough }
             mcpSession = nil
-            try await call(tool, arguments, retried: true)
+            try await call(tool, arguments, retriedSession: true, retriedAuth: retriedAuth)
         default:
             throw Failure(message: "T3 answered with HTTP \(status).")
         }
@@ -182,7 +187,7 @@ actor T3Actions {
     // MARK: Signing in
 
     private func signedIn() async throws -> Session {
-        guard enabled else { throw Failure(message: "Snooze and settle are off.") }
+        guard enabled else { throw Failure(message: "Snooze and settle are off.", actionsOff: true) }
         if let session { return session }
         if let data = try? Data(contentsOf: sessionFile),
            let saved = try? JSONDecoder().decode(Session.self, from: data), saved.expiresAt > Date() {
