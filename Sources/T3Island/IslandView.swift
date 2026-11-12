@@ -109,7 +109,7 @@ private struct ThreadGlance: View {
         let waiting = settings.showWaiting ? threads.filter { $0.mood != .working } : []
         HStack(spacing: 6) {
             if working.isEmpty && waiting.isEmpty && (settings.showWorking || settings.showWaiting) {
-                BlobAvatar(seed: "t3-island", mood: .idle, size: size).saturation(0).opacity(0.5)
+                BlobAvatar(seed: "t3-island", mood: .idle, size: size, muted: true)
             }
             if !waiting.isEmpty {
                 group(waiting)
@@ -495,9 +495,7 @@ private struct ThreadRow: View {
         let wake = snoozed ? thread.snoozedUntil : nil
         Button(action: onOpen) {
             HStack(spacing: 10) {
-                BlobAvatar(seed: thread.id, mood: thread.mood, size: 28)
-                    .saturation(snoozed ? 0 : 1)
-                    .opacity(snoozed ? 0.5 : 1)
+                BlobAvatar(seed: thread.id, mood: thread.mood, size: 28, muted: snoozed)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(thread.title)
                         .font(.system(size: 12.5, weight: .semibold))

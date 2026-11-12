@@ -64,8 +64,9 @@ final class SettingsStore: ObservableObject {
         didSet { UserDefaults.standard.set(try? JSONEncoder().encode(value), forKey: Self.key) }
     }
 
-    init() {
-        value = Self.load()
+    /// Pass `value` to use it instead of what's saved; it is only saved once changed.
+    init(value: IslandSettings? = nil) {
+        self.value = value ?? Self.load()
     }
 
     /// Overlays what was saved on the defaults, so settings added in later versions don't reset the rest.

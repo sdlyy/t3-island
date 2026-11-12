@@ -33,14 +33,18 @@ enum Theme {
 }
 
 extension Color {
-    init(hex: String) {
+    /// `greyscale` keeps only the luminance.
+    init(hex: String, greyscale: Bool = false) {
         let digits = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         let value = UInt64(digits, radix: 16) ?? 0xFFFFFF
-        self.init(
-            red: Double((value >> 16) & 0xFF) / 255,
-            green: Double((value >> 8) & 0xFF) / 255,
-            blue: Double(value & 0xFF) / 255
-        )
+        let red = Double((value >> 16) & 0xFF) / 255
+        let green = Double((value >> 8) & 0xFF) / 255
+        let blue = Double(value & 0xFF) / 255
+        if greyscale {
+            self.init(white: 0.2126 * red + 0.7152 * green + 0.0722 * blue)
+        } else {
+            self.init(red: red, green: green, blue: blue)
+        }
     }
 }
 
