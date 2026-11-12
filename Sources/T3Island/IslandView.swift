@@ -53,7 +53,7 @@ struct IslandView: View {
         .background(shape.fill(Theme.island).shadow(color: .black.opacity(expanded ? 0.45 : 0), radius: 14, y: 4))
         .onGeometryChange(for: CGSize.self, of: \.size) { state.shapeSize = $0 }
         // Thread updates shuffle faces, rows and the island's outline together.
-        .animation(Theme.shuffle, value: store.threads)
+        .animation(store.motion, value: store.threads)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .ignoresSafeArea()
     }
@@ -252,8 +252,8 @@ private struct ExpandedIsland: View {
                             toggle(.waiting)
                         }
                         ForEach(waiting.prefix(waitingShown)) { thread in
-                            ThreadRow(thread: thread, now: now) { onOpen(thread) }
-                                .matchedGeometryEffect(id: thread.id, in: rows)
+                            // A question needs an answer in T3, so it gets no shortcuts here.
+                            row(thread, now: now, actions: thread.mood == .needsYou ? .none : .organize)
                         }
                     }
                     if !working.isEmpty {
@@ -262,8 +262,7 @@ private struct ExpandedIsland: View {
                         }
                         .padding(.top, waiting.isEmpty ? 0 : 6)
                         ForEach(working.prefix(workingShown)) { thread in
-                            ThreadRow(thread: thread, now: now) { onOpen(thread) }
-                                .matchedGeometryEffect(id: thread.id, in: rows)
+                            row(thread, now: now, actions: .none)
                         }
                     }
                     if let wake = snoozed.compactMap(\.snoozedUntil).min() {
@@ -272,14 +271,23 @@ private struct ExpandedIsland: View {
                                       isOpen: isOpen(.snoozed)) { toggle(.snoozed) }
                             .padding(.top, waiting.isEmpty && working.isEmpty ? 0 : 6)
                         ForEach(snoozed.prefix(snoozedShown)) { thread in
-                            ThreadRow(thread: thread, now: now) { onOpen(thread) }
-                                .matchedGeometryEffect(id: thread.id, in: rows)
+                            row(thread, now: now, actions: .wake)
                         }
                     }
                 }
 
                 HStack {
-                    FooterButton(title: hidden > 0 ? "+\(hidden) more in T3 Code" : "Open T3 Code") { onOpen(nil) }
+                    ZStack(alignment: .leading) {
+                        if let notice = store.notice {
+                            NoticeLine(notice: notice, undo: store.undo)
+                                .id(notice.id)
+                                .transition(.opacity.combined(with: .offset(y: 4)).combined(with: .blurred))
+                        } else {
+                            FooterButton(title: hidden > 0 ? "+\(hidden) more in T3 Code" : "Open T3 Code") { onOpen(nil) }
+                                .transition(.opacity.combined(with: .blurred))
+                        }
+                    }
+                    .animation(Theme.act, value: store.notice?.id)
                     Spacer()
                     FooterButton(title: "Settings", action: onSettings)
                     FooterButton(title: "Quit") { NSApp.terminate(nil) }
@@ -287,6 +295,16 @@ private struct ExpandedIsland: View {
             }
             .padding(.bottom, 12)
         }
+    }
+
+    private func row(_ thread: T3Thread, now: Date, actions: RowActions) -> some View {
+        ThreadRow(thread: thread, now: now, actions: settings.value.threadActions ? actions : .none,
+                  onOpen: { onOpen(thread) },
+                  onSettle: { store.settle(thread) },
+                  onSnooze: { store.snooze(thread, until: $0) },
+                  onWake: { store.wake(thread) },
+                  onHover: { store.hold(thread.id, $0) })
+            .matchedGeometryEffect(id: thread.id, in: rows)
     }
 
     private func isOpen(_ section: IslandSection) -> Bool {
@@ -318,6 +336,7 @@ private struct ExpandedIsland: View {
                         Text("\(count)")
                             .font(.system(size: 11, weight: .semibold, design: .rounded))
                             .foregroundStyle(Theme.secondary)
+                            .contentTransition(.numericText())
                     }
                     .help(mood.label)
                 }
@@ -447,7 +466,7 @@ private struct SectionHeader: View {
                 Text(title.uppercased()).tracking(0.6)
                 if let detail { Text("· \(detail)").fontWeight(.regular) }
                 Spacer(minLength: 8)
-                if let count { Text("\(count)") }
+                if let count { Text("\(count)").contentTransition(.numericText()) }
                 Image(systemName: "chevron.right")
                     .font(.system(size: 8, weight: .bold))
                     .rotationEffect(.degrees(isOpen ? 90 : 0))
@@ -460,6 +479,25 @@ private struct SectionHeader: View {
         }
         .buttonStyle(.plain)
         .background { if usesAppKitViews { HoverTracker { hovered = $0 } } }
+    }
+}
+
+/// What the last action did, with Undo, or why it failed.
+private struct NoticeLine: View {
+    let notice: ActionNotice
+    let undo: () -> Void
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Text(notice.text)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(notice.isError ? Theme.failed : Theme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 8)
+            if notice.undo != nil {
+                FooterButton(title: "Undo", action: undo)
+            }
+        }
     }
 }
 
@@ -483,50 +521,287 @@ private struct FooterButton: View {
     }
 }
 
+/// What a row offers on hover.
+private enum RowActions {
+    case none
+    /// Threads waiting on you: snooze or settle.
+    case organize
+    /// Snoozed threads: wake now.
+    case wake
+}
+
+private enum Reaction {
+    case settle, snooze, wake
+}
+
 private struct ThreadRow: View {
     let thread: T3Thread
     let now: Date
+    var actions = RowActions.none
     let onOpen: () -> Void
+    var onSettle: () -> Void = {}
+    var onSnooze: (Date) -> Void = { _ in }
+    var onWake: () -> Void = {}
+    var onHover: (Bool) -> Void = { _ in }
     @State private var hovered = false
+    @State private var choosingSnooze = false
+    /// Set the moment an action is picked: the face reacts before the row leaves.
+    @State private var reaction: Reaction?
     @Environment(\.usesAppKitViews) private var usesAppKitViews
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let snoozed = thread.snoozedUntil != nil && thread.mood != .working
-        let wake = snoozed ? thread.snoozedUntil : nil
-        Button(action: onOpen) {
-            HStack(spacing: 10) {
-                BlobAvatar(seed: thread.id, mood: thread.mood, size: 28, muted: snoozed)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(thread.title)
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(thread.mood == .working || snoozed ? Theme.secondary : Theme.primary)
-                        .lineLimit(1)
-                    Text([thread.project, thread.provider].filter { !$0.isEmpty }.joined(separator: " · "))
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.muted)
-                        .lineLimit(1)
+        let asleep = reaction == .snooze || (snoozed && reaction != .wake)
+        let showActions = actions != .none && hovered && reaction == nil
+        HStack(spacing: 10) {
+            Button(action: onOpen) {
+                HStack(spacing: 10) {
+                    avatar(asleep: asleep)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(thread.title)
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(thread.mood == .working || asleep ? Theme.secondary : Theme.primary)
+                            .lineLimit(1)
+                        Text([thread.project, thread.provider].filter { !$0.isEmpty }.joined(separator: " · "))
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
                 }
-                Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(snoozed ? "Snoozed" : thread.mood.label)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(snoozed ? Theme.muted : Theme.mood(thread.mood))
-                    Text(wake.map { "in \(Format.duration($0.timeIntervalSince(now)))" }
-                        ?? Format.ago(thread.since ?? thread.updatedAt, now: now))
-                        .font(.system(size: 10))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.muted)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            ZStack(alignment: .trailing) {
+                if let reaction {
+                    outcome(reaction).transition(swap)
+                } else if showActions && choosingSnooze {
+                    SnoozeChoices(now: now) { until in commit(.snooze) { onSnooze(until) } }
+                        .fixedSize()
+                        .transition(swap)
+                } else if showActions {
+                    HStack(spacing: 4) {
+                        if actions == .organize {
+                            RowButton(icon: "moon.zzz.fill", help: "Snooze") {
+                                withAnimation(.easeOut(duration: 0.18)) { choosingSnooze = true }
+                            }
+                            RowButton(icon: "checkmark", help: "Settle") { commit(.settle, onSettle) }
+                        } else {
+                            RowButton(icon: "sun.max.fill", help: "Wake up now") { commit(.wake, onWake) }
+                        }
+                    }
+                    .transition(swap)
+                } else {
+                    status(snoozed: snoozed)
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: onOpen)
+                        .transition(swap)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(hovered ? Color.white.opacity(0.07) : .clear)
-            )
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .background { if usesAppKitViews { HoverTracker { hovered = $0 } } }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(hovered ? Color.white.opacity(0.07) : .clear)
+        )
+        .background {
+            if usesAppKitViews {
+                HoverTracker { inside in
+                    onHover(inside)
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        hovered = inside
+                        if !inside { choosingSnooze = false }
+                    }
+                }
+            }
+        }
+        .onDisappear { onHover(false) }
+        .transition(.asymmetric(insertion: .opacity, removal: exit))
+    }
+
+    private func avatar(asleep: Bool) -> some View {
+        BlobAvatar(seed: thread.id, mood: reaction == .settle ? .replied : thread.mood, size: 28,
+                   muted: asleep, sleeping: asleep)
+            .overlay(alignment: .bottomTrailing) {
+                if reaction == .settle {
+                    Circle()
+                        .fill(Theme.working)
+                        .frame(width: 13, height: 13)
+                        .overlay(Image(systemName: "checkmark").font(.system(size: 7, weight: .heavy)).foregroundStyle(.black))
+                        .offset(x: 2, y: 2)
+                        .transition(reduceMotion ? .opacity : .scale(scale: 0.3).combined(with: .opacity))
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if reaction == .snooze && !reduceMotion { FloatingZ().offset(x: 4, y: -2) }
+            }
+    }
+
+    private func status(snoozed: Bool) -> some View {
+        let wake = snoozed ? thread.snoozedUntil : nil
+        return VStack(alignment: .trailing, spacing: 2) {
+            Text(snoozed ? "Snoozed" : thread.mood.label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(snoozed ? Theme.muted : Theme.mood(thread.mood))
+            Text(wake.map { "in \(Format.duration($0.timeIntervalSince(now)))" }
+                ?? Format.ago(thread.since ?? thread.updatedAt, now: now))
+                .font(.system(size: 10))
+                .monospacedDigit()
+                .foregroundStyle(Theme.muted)
+        }
+    }
+
+    private func outcome(_ reaction: Reaction) -> some View {
+        Text(reaction == .settle ? "Settled" : reaction == .snooze ? "Snoozed" : "Awake")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(reaction == .settle ? Theme.working : reaction == .snooze ? Theme.muted : Theme.needsYou)
+    }
+
+    /// The face reacts first, then the row leaves: a short beat so you see what happened.
+    private func commit(_ reaction: Reaction, _ perform: @escaping () -> Void) {
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+            self.reaction = reaction
+            choosingSnooze = false
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (reduceMotion ? 0.05 : 0.28), execute: perform)
+    }
+
+    /// Settled rows leave to the right, snoozed ones sink towards the Snoozed section. Exits are quicker than
+    /// the rows closing the gap, so a leaving row is gone before its neighbours slide over it.
+    private var exit: AnyTransition {
+        let quick = Animation.easeOut(duration: 0.15)
+        if reduceMotion { return .opacity.animation(quick) }
+        switch reaction {
+        case .settle: return .offset(x: 36).combined(with: .opacity).animation(quick)
+        case .snooze: return .offset(y: 6).combined(with: .scale(scale: 0.97)).combined(with: .opacity).animation(quick)
+        case .wake, nil: return .opacity
+        }
+    }
+
+    /// Blur hides the crossfade between the status and the buttons.
+    private var swap: AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.92, anchor: .trailing)).combined(with: .blurred)
+    }
+}
+
+private struct RowButton: View {
+    let icon: String
+    let help: String
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(hovered ? Theme.primary : Theme.secondary)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(Color.white.opacity(hovered ? 0.16 : 0.08)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(PressScale())
+        .help(help)
+        .background(HoverTracker { inside in withAnimation(.easeOut(duration: 0.12)) { hovered = inside } })
+    }
+}
+
+/// Snooze lengths, sliding in one after another.
+private struct SnoozeChoices: View {
+    let now: Date
+    let choose: (Date) -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(Self.options(now).enumerated()), id: \.offset) { index, option in
+                SnoozeChip(title: option.title, help: Format.clock(option.date, now: now), delay: Double(index) * 0.03) {
+                    choose(option.date)
+                }
+            }
+        }
+    }
+
+    static func options(_ now: Date) -> [(title: String, date: Date)] {
+        let calendar = Calendar.current
+        let morning = DateComponents(hour: 9, minute: 0)
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: now).flatMap {
+            calendar.date(bySettingHour: 9, minute: 0, second: 0, of: $0)
+        } ?? now.addingTimeInterval(86400)
+        var monday = morning
+        monday.weekday = 2
+        let nextWeek = calendar.nextDate(after: now, matching: monday, matchingPolicy: .nextTime) ?? now.addingTimeInterval(7 * 86400)
+        return [
+            ("1h", now.addingTimeInterval(3600)), ("3h", now.addingTimeInterval(3 * 3600)),
+            ("Tomorrow", tomorrow), ("Next week", nextWeek),
+        ]
+    }
+}
+
+private struct SnoozeChip: View {
+    let title: String
+    let help: String
+    let delay: Double
+    let action: () -> Void
+    @State private var shown = false
+    @State private var hovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(hovered ? Theme.primary : Theme.secondary)
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .background(Capsule().fill(Color.white.opacity(hovered ? 0.16 : 0.08)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(PressScale())
+        .help(help)
+        .background(HoverTracker { inside in withAnimation(.easeOut(duration: 0.12)) { hovered = inside } })
+        .opacity(shown ? 1 : 0)
+        .offset(x: shown || reduceMotion ? 0 : 8)
+        .onAppear { withAnimation(.easeOut(duration: 0.2).delay(delay)) { shown = true } }
+    }
+}
+
+/// Two little z's drifting up from a face that just fell asleep.
+private struct FloatingZ: View {
+    @State private var up = false
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            ForEach(0..<2) { index in
+                Text("z")
+                    .font(.system(size: index == 0 ? 9 : 7, weight: .heavy, design: .rounded))
+                    .foregroundStyle(Theme.secondary)
+                    .offset(x: CGFloat(index) * 5, y: up ? -9 - CGFloat(index) * 4 : 0)
+                    .opacity(up ? 0 : 1)
+                    .animation(.easeOut(duration: 0.55).delay(Double(index) * 0.08), value: up)
+            }
+        }
+        .onAppear { up = true }
+    }
+}
+
+/// Buttons give a little under the pointer.
+private struct PressScale: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.9 : 1)
+            .animation(.spring(response: 0.2, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+}
+
+private struct BlurModifier: ViewModifier {
+    let radius: CGFloat
+    func body(content: Content) -> some View { content.blur(radius: radius) }
+}
+
+private extension AnyTransition {
+    static var blurred: AnyTransition {
+        .modifier(active: BlurModifier(radius: 3), identity: BlurModifier(radius: 0))
     }
 }

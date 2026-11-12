@@ -25,6 +25,8 @@ enum Theme {
 
     /// Thread updates: faces and rows slide to their new place and settle with a small overshoot.
     static let shuffle = Animation.spring(response: 0.5, dampingFraction: 0.68)
+    /// Your own actions: quick and without overshoot, since you already know what happened.
+    static let act = Animation.spring(response: 0.3, dampingFraction: 0.86)
 
     static func accent(_ provider: ProviderLimits) -> Color {
         if let hex = provider.accentHex { return Color(hex: hex) }
@@ -49,6 +51,17 @@ extension Color {
 }
 
 enum Format {
+    /// "21:30", "tomorrow 09:00" or "Mon 09:00", in the user's clock format.
+    static func clock(_ date: Date, now: Date) -> String {
+        let time = date.formatted(date: .omitted, time: .shortened)
+        let calendar = Calendar.current
+        if calendar.isDate(date, inSameDayAs: now) { return time }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) {
+            return "tomorrow \(time)"
+        }
+        return "\(date.formatted(.dateTime.weekday(.abbreviated))) \(time)"
+    }
+
     /// "4h 21m", "5d 3h", "12m", "now".
     static func duration(_ seconds: TimeInterval) -> String {
         let s = max(0, Int(seconds))

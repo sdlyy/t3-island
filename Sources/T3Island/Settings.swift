@@ -34,6 +34,7 @@ struct IslandSettings: Codable, Equatable {
     var showIdle = true
     var facesPerGroup = 3
     var openOnHover = false
+    var threadActions = true
     var islandWindow = IslandWindow.session
     var collapsedSections: Set<IslandSection> = [.snoozed]
 
@@ -142,6 +143,10 @@ private struct SettingsView: View {
 
             Section("Behaviour") {
                 Toggle("Open on hover", isOn: $settings.value.openOnHover)
+                Toggle(isOn: threadActions) {
+                    Text("Snooze and settle threads")
+                    Text("Hover a thread to see the actions. The first one signs in to T3 with full access, which T3 needs to change full-access threads. Turning this off signs the island out of T3.")
+                }
                 Toggle(isOn: loginItem) {
                     Text("Launch at login")
                     if let loginNote { Text(loginNote) }
@@ -158,6 +163,16 @@ private struct SettingsView: View {
             get: { !settings.value.hiddenProviders.contains(id) },
             set: { shown in
                 if shown { settings.value.hiddenProviders.remove(id) } else { settings.value.hiddenProviders.insert(id) }
+            }
+        )
+    }
+
+    private var threadActions: Binding<Bool> {
+        Binding(
+            get: { settings.value.threadActions },
+            set: { on in
+                settings.value.threadActions = on
+                if !on { store.signOut() }
             }
         )
     }
