@@ -172,7 +172,7 @@ private struct SettingsView: View {
             get: { settings.value.threadActions },
             set: { on in
                 settings.value.threadActions = on
-                if !on { store.signOut() }
+                if on { store.enableActions() } else { store.signOut() }
             }
         )
     }

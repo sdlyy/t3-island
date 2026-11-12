@@ -80,7 +80,7 @@ final class Store: ObservableObject {
         if heldBy == nil || Self.sameLayout(raw, snap.threads) {
             raw = snap.threads
             rawAt = readAt
-            publishThreads(motion: Theme.shuffle)
+            publishThreads(motion: Theme.shuffle, prune: true)
         } else if let id = heldBy, let i = raw.firstIndex(where: { $0.id == id }),
                   let fresh = snap.threads.first(where: { $0.id == id }), Self.section(fresh) == Self.section(raw[i]) {
             // The rows stay put, but the one under the pointer still shows what changed, such as a new question.
@@ -89,6 +89,16 @@ final class Store: ObservableObject {
         }
         if providers != snap.providers { providers = snap.providers }
         if problem != snap.problem { problem = snap.problem }
+    }
+
+    /// Whether T3's copy of a thread (nil when it's not listed) already shows a change.
+    private static func shows(_ change: ThreadChange, _ thread: T3Thread?) -> Bool {
+        switch change {
+        case .settled: thread == nil
+        case .unsettled: thread != nil
+        case .snoozed: thread?.snoozedUntil != nil
+        case .woke: thread?.snoozedUntil == nil
+        }
     }
 
     /// The dropdown section a thread sits in: working, waiting on you or snoozed.
@@ -135,9 +145,15 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Forgets the island's sign-in and revokes it in T3.
+    /// Forgets the island's sign-in and revokes it in T3. A pending Undo goes too, since it would sign in again.
     func signOut() {
+        notice = nil
         Task { await actions.signOut() }
+    }
+
+    /// Lets actions sign in again, after a sign-out by the user or by T3.
+    func enableActions() {
+        Task { await actions.enable() }
     }
 
     private func perform(_ thread: T3Thread, _ change: ThreadChange, notice text: String, undoable: Bool = true) {
@@ -179,30 +195,34 @@ final class Store: ObservableObject {
     }
 
     /// T3's threads with the island's own changes on top, until a snapshot read after T3 accepted a change
-    /// shows it, or 20 s pass.
-    private func publishThreads(motion: Animation) {
+    /// shows it, or it times out. Only a fresh snapshot (`prune`) can retire a change: the stale one kept
+    /// while a row is held would bring a settled thread back under the pointer.
+    private func publishThreads(motion: Animation, prune: Bool = false) {
         let byId = Dictionary(raw.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        changes = changes.filter { id, entry in
-            if demo != nil { return true }
-            guard Date().timeIntervalSince(entry.at) < 20 else { return false }
-            guard let done = entry.done, rawAt > done else { return true }
-            let shown: Bool
-            switch entry.change {
-            case .settled: shown = byId[id] == nil
-            case .unsettled: shown = byId[id] != nil
-            case .snoozed: shown = byId[id]?.snoozedUntil != nil
-            case .woke: shown = byId[id]?.snoozedUntil == nil
+        if prune && demo == nil {
+            changes = changes.filter { id, entry in
+                // Before T3 answers, the wait can include signing in, so it gets longer.
+                guard Date().timeIntervalSince(entry.done ?? entry.at) < (entry.done == nil ? 60 : 20) else { return false }
+                guard let done = entry.done, rawAt > done else { return true }
+                return !Self.shows(entry.change, byId[id])
             }
-            return !shown
         }
 
+        // Restored threads go back first, since their places are counted in T3's list.
         var list = raw
+        let restored = changes.values.compactMap { entry -> (thread: T3Thread, index: Int)? in
+            guard case .unsettled(let thread, let index) = entry.change, byId[thread.id] == nil else { return nil }
+            return (thread, index)
+        }
+        for item in restored.sorted(by: { $0.index < $1.index }) {
+            list.insert(item.thread, at: min(item.index, list.count))
+        }
         for (id, entry) in changes {
             switch entry.change {
             case .settled:
                 list.removeAll { $0.id == id }
-            case .unsettled(let thread, let index):
-                if !list.contains(where: { $0.id == id }) { list.insert(thread, at: min(index, list.count)) }
+            case .unsettled:
+                break
             case .snoozed(let until):
                 if let i = list.firstIndex(where: { $0.id == id }) { list[i].snoozedUntil = until }
             case .woke:
