@@ -9,8 +9,24 @@ struct DemoData {
         ("Review onboarding copy", "web"), ("Upgrade Postgres to 17", "infra"),
         ("Investigate worker memory leak", "worker"), ("Tidy up feature flags", "web"),
     ]
-    private var moods: [ThreadMood] = [.needsYou, .replied, .idle, .working, .idle, .working, .failed, .idle]
+    private var moods: [ThreadMood] = [.needsYou, .replied, .idle, .working, .idle, .waiting, .failed, .idle]
     private var step = 0
+
+    /// Made-up lines: what each thread last said, and the steps working threads go through, one per refresh.
+    private static let said = [
+        "Should retries run on every webhook, or only after a 5xx?",
+        "Fixed the race: CartTest now waits for the debounce before asserting.",
+        "The draft is in roadmap-q3.md. Want me to tighten the intro?",
+        "Moved all six jobs to the queue; the old cron entries are gone.",
+        "Rewrote the welcome screen copy. Two options for the headline.",
+        "Opened #42 for the upgrade. Waiting for its checks.",
+        "error: no such module 'PostgresNIO'",
+        "Removed four stale flags; two are still read by the billing service.",
+    ]
+    private static let steps = [
+        "$ swift test --filter CheckoutTests", "Edited JobQueue.swift", "Thinking…",
+        "Searching “pg_upgrade link mode”", "Read MIGRATION.md", "Now updating the worker to read from the queue",
+    ]
 
     mutating func next() -> Snapshot {
         if step > 0 {
@@ -24,7 +40,9 @@ struct DemoData {
             T3Thread(id: "demo-\(i)", title: item.0, project: item.1, provider: i % 3 == 2 ? "Codex" : "Claude",
                      mood: moods[i], since: now.addingTimeInterval(-Double(90 + i * 1500)),
                      updatedAt: now.addingTimeInterval(-Double(i * 60)),
-                     snoozedUntil: i == 7 ? now.addingTimeInterval(2 * 3600 + 600) : nil)
+                     snoozedUntil: i == 7 ? now.addingTimeInterval(2 * 3600 + 600) : nil,
+                     waitingOn: moods[i] == .waiting ? "PR #42" : nil,
+                     line: moods[i] == .working ? Self.steps[(step + i) % Self.steps.count] : Self.said[i])
         }
         return Snapshot(
             threads: threads.enumerated().sorted { ($0.element.mood, $0.offset) < ($1.element.mood, $1.offset) }.map(\.element),
@@ -37,7 +55,7 @@ struct DemoData {
 
     private static func after(_ mood: ThreadMood) -> ThreadMood {
         switch mood {
-        case .working: .replied
+        case .working, .waiting: .replied
         case .replied: .idle
         case .idle, .needsYou, .failed: .working
         }

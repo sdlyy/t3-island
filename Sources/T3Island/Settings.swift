@@ -53,7 +53,7 @@ struct IslandSettings: Codable, Equatable {
 
     /// Snoozed threads stay out until they wake, as in T3's sidebar; working ones are shown either way.
     func visible(_ threads: [T3Thread]) -> [T3Thread] {
-        threads.filter { ($0.snoozedUntil == nil || $0.mood == .working) && (showIdle || $0.mood != .idle) }
+        threads.filter { ($0.snoozedUntil == nil || $0.mood.isBusy) && (showIdle || $0.mood != .idle) }
     }
 }
 

@@ -105,8 +105,8 @@ private struct ThreadGlance: View {
     @Namespace private var faces
 
     var body: some View {
-        let working = settings.showWorking ? threads.filter { $0.mood == .working } : []
-        let waiting = settings.showWaiting ? threads.filter { $0.mood != .working } : []
+        let working = settings.showWorking ? threads.filter { $0.mood.isBusy } : []
+        let waiting = settings.showWaiting ? threads.filter { !$0.mood.isBusy } : []
         HStack(spacing: 6) {
             if working.isEmpty && waiting.isEmpty && (settings.showWorking || settings.showWaiting) {
                 BlobAvatar(seed: "t3-island", mood: .idle, size: size, muted: true)
@@ -208,10 +208,10 @@ private struct ExpandedIsland: View {
         TimelineView(.periodic(from: .now, by: 15)) { timeline in
             let now = timeline.date
             let threads = settings.value.visible(store.threads)
-            let waiting = settings.value.showWaiting ? threads.filter { $0.mood != .working } : []
-            let working = settings.value.showWorking ? threads.filter { $0.mood == .working } : []
+            let waiting = settings.value.showWaiting ? threads.filter { !$0.mood.isBusy } : []
+            let working = settings.value.showWorking ? threads.filter { $0.mood.isBusy } : []
             let snoozed = settings.value.showWaiting
-                ? store.threads.filter { $0.snoozedUntil != nil && $0.mood != .working } : []
+                ? store.threads.filter { $0.snoozedUntil != nil && !$0.mood.isBusy } : []
             // Only open sections take rows.
             let openWaiting = isOpen(.waiting) ? waiting.count : 0
             let openWorking = isOpen(.working) ? working.count : 0
@@ -329,7 +329,8 @@ private struct ExpandedIsland: View {
                 .foregroundStyle(Theme.secondary)
             Spacer()
             ForEach([ThreadMood.needsYou, .failed, .replied, .idle, .working], id: \.self) { mood in
-                let count = threads.filter { $0.mood == mood }.count
+                // Waiting threads count with working ones: neither needs you.
+                let count = threads.filter { mood == .working ? $0.mood.isBusy : $0.mood == mood }.count
                 if count > 0 {
                     HStack(spacing: 4) {
                         Circle().fill(Theme.mood(mood)).frame(width: 6, height: 6)
@@ -551,7 +552,7 @@ private struct ThreadRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let snoozed = thread.snoozedUntil != nil && thread.mood != .working
+        let snoozed = thread.snoozedUntil != nil && !thread.mood.isBusy
         let asleep = reaction == .snooze || (snoozed && reaction != .wake)
         let showActions = actions != .none && hovered && reaction == nil
         HStack(spacing: 10) {
@@ -559,14 +560,19 @@ private struct ThreadRow: View {
                 HStack(spacing: 10) {
                     avatar(asleep: asleep)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(thread.title)
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundStyle(thread.mood == .working || asleep ? Theme.secondary : Theme.primary)
-                            .lineLimit(1)
-                        Text([thread.project, thread.provider].filter { !$0.isEmpty }.joined(separator: " · "))
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.muted)
-                            .lineLimit(1)
+                        // The title keeps its room; the project and model tag gives way first.
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(thread.title)
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(thread.mood.isBusy || asleep ? Theme.secondary : Theme.primary)
+                                .lineLimit(1)
+                                .layoutPriority(1)
+                            Text([thread.project, thread.provider].filter { !$0.isEmpty }.joined(separator: " · "))
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.muted)
+                                .lineLimit(1)
+                        }
+                        LiveLine(text: thread.line, attention: !thread.mood.isBusy && !asleep)
                     }
                     Spacer(minLength: 8)
                 }
@@ -649,7 +655,7 @@ private struct ThreadRow: View {
     private func status(snoozed: Bool) -> some View {
         let wake = snoozed ? thread.snoozedUntil : nil
         return VStack(alignment: .trailing, spacing: 2) {
-            Text(snoozed ? "Snoozed" : thread.mood.label)
+            Text(snoozed ? "Snoozed" : thread.status)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(snoozed ? Theme.muted : Theme.mood(thread.mood))
             Text(wake.map { "in \(Format.duration($0.timeIntervalSince(now)))" }
@@ -690,6 +696,34 @@ private struct ThreadRow: View {
     /// Blur hides the crossfade between the status and the buttons.
     private var swap: AnyTransition {
         reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.92, anchor: .trailing)).combined(with: .blurred)
+    }
+}
+
+/// The latest thing a thread said or did. A new line slides up into place, so updates read as a ticker.
+private struct LiveLine: View {
+    let text: String?
+    /// Brighter for threads waiting on you, whose line is the reply or question to read.
+    let attention: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            if let text {
+                Text(text)
+                    .font(text.hasPrefix("$ ") ? .system(size: 10.5, design: .monospaced) : .system(size: 11))
+                    .foregroundStyle(attention ? Theme.secondary : Theme.muted)
+                    .lineLimit(1)
+                    .id(text)
+                    .transition(reduceMotion ? .opacity : .asymmetric(
+                        insertion: .offset(y: 6).combined(with: .opacity).combined(with: .blurred),
+                        removal: .offset(y: -6).combined(with: .opacity).combined(with: .blurred)
+                    ))
+            }
+        }
+        // Holds the row's height while a line is loading or there is none.
+        .frame(maxWidth: .infinity, minHeight: 14, alignment: .leading)
+        .clipped()
+        .animation(.easeOut(duration: 0.22), value: text)
     }
 }
 

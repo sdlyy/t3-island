@@ -145,6 +145,7 @@ final class IslandController: NSObject {
         openWork?.cancel()
         openWork = nil
         guard state.expanded != expanded else { return }
+        store.wantsLines = expanded
         if expanded { store.refresh() }
         withAnimation(.spring(response: 0.42, dampingFraction: expanded ? 0.78 : 0.88)) {
             state.expanded = expanded

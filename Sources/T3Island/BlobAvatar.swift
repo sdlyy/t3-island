@@ -13,7 +13,7 @@ struct BlobAvatar: View {
 
     var body: some View {
         // Working threads don't need you, so they recede in grey; everything else stays in full colour.
-        let muted = muted || mood == .working
+        let muted = muted || mood.isBusy
         ZStack {
             switch mood {
             case .working where animates:
@@ -23,6 +23,12 @@ struct BlobAvatar: View {
                 Circle()
                     .trim(from: 0.5, to: 0.8)
                     .stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: max(1, size * 0.06), lineCap: .round))
+                    .frame(width: size * 0.9, height: size * 0.9)
+            case .waiting:
+                // Still, unlike the working spinner: nothing is happening here until its agents or checks finish.
+                Circle()
+                    .stroke(Color.white.opacity(0.7), style: StrokeStyle(lineWidth: max(1, size * 0.06), lineCap: .round,
+                                                                         dash: [max(1, size * 0.08), max(2, size * 0.14)]))
                     .frame(width: size * 0.9, height: size * 0.9)
             case _ where muted:
                 EmptyView()
@@ -131,7 +137,7 @@ private struct BlobFace: View {
         for side in [-1.0, 1.0] {
             let x = c.x + side * spread
             switch mood {
-            case .working, .needsYou, .idle:
+            case .working, .waiting, .needsYou, .idle:
                 let big = mood == .needsYou ? 1.25 : 1
                 let look = mood == .working ? r * 0.06 : 0
                 let lift = mood == .needsYou ? -r * 0.04 : 0
@@ -171,7 +177,7 @@ private struct BlobFace: View {
             flat.move(to: CGPoint(x: mouth.x - r * 0.12, y: mouth.y))
             flat.addLine(to: CGPoint(x: mouth.x + r * 0.12, y: mouth.y))
             ctx.stroke(flat, with: .color(Self.ink), style: line)
-        case .working:
+        case .working, .waiting:
             break
         }
     }
