@@ -23,6 +23,36 @@ enum IslandWindow: String, Codable, CaseIterable {
     var kind: String? { self == .tightest ? nil : rawValue }
 }
 
+/// Which displays show the island. A chosen display keeps its name for when it's not connected.
+enum IslandDisplay: Codable, Hashable {
+    case automatic, main, all
+    case one(id: String, name: String)
+
+    /// The screens to show it on now. A chosen display that's not connected falls back to automatic.
+    func screens() -> [NSScreen] {
+        // The first screen is the main display, the one Arrangement puts the menu bar on.
+        let screens = NSScreen.screens
+        let automatic = screens.first { $0.safeAreaInsets.top > 0 } ?? screens.first
+        switch self {
+        case .automatic: return automatic.map { [$0] } ?? []
+        case .main: return screens.first.map { [$0] } ?? []
+        case .all: return screens
+        case .one(let id, _): return (screens.first { $0.uuid == id } ?? automatic).map { [$0] } ?? []
+        }
+    }
+}
+
+extension NSScreen {
+    var displayID: CGDirectDisplayID {
+        deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
+    }
+
+    /// Unlike the display id, stays the same across reconnects and restarts.
+    var uuid: String? {
+        CGDisplayCreateUUIDFromDisplayID(displayID).map { CFUUIDCreateString(nil, $0.takeRetainedValue()) as String }
+    }
+}
+
 /// Everything the user can change. Saved as one JSON blob in UserDefaults.
 struct IslandSettings: Codable, Equatable {
     var showQuotaLeft = true
@@ -36,6 +66,7 @@ struct IslandSettings: Codable, Equatable {
     var openOnHover = false
     var threadActions = true
     var islandWindow = IslandWindow.session
+    var display = IslandDisplay.automatic
     var collapsedSections: Set<IslandSection> = [.snoozed]
 
     /// The number to show for a quota with `left` percent remaining.
@@ -86,9 +117,11 @@ final class SettingsStore: ObservableObject {
 final class SettingsWindow {
     private var window: NSWindow?
 
-    func show(settings: SettingsStore, store: Store) {
+    /// Opens on `screen`, the display of the island it was opened from, unless it's already open.
+    func show(settings: SettingsStore, store: Store, on screen: NSScreen?) {
         if window == nil {
-            let controller = NSHostingController(rootView: SettingsView(settings: settings, store: store))
+            // The form keeps its full height, as measured; the scroll view fits it to a short screen.
+            let controller = NSHostingController(rootView: ScrollView { SettingsView(settings: settings, store: store) })
             let window = NSWindow(contentViewController: controller)
             window.styleMask = [.titled, .closable]
             window.title = "T3 Island Settings"
@@ -96,6 +129,14 @@ final class SettingsWindow {
             window.setContentSize(controller.view.fittingSize)
             window.center()
             self.window = window
+        }
+        if let window, !window.isVisible, let content = window.contentViewController?.view,
+           let area = (screen ?? NSScreen.main)?.visibleFrame {
+            // At most the screen's height; the rest scrolls.
+            var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: content.fittingSize))
+            frame.size.height = min(frame.height, area.height)
+            frame.origin = NSPoint(x: area.midX - frame.width / 2, y: area.midY - frame.height / 2)
+            window.setFrame(frame, display: false)
         }
         NSApp.activate(ignoringOtherApps: true)
         // Island clicks don't activate the app, so macOS may refuse the activation above; order front anyway.
@@ -109,6 +150,7 @@ private struct SettingsView: View {
     @ObservedObject var store: Store
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginNote: String?
+    @State private var displays = Self.connectedDisplays()
 
     var body: some View {
         Form {
@@ -142,6 +184,20 @@ private struct SettingsView: View {
             }
 
             Section("Behaviour") {
+                Picker(selection: $settings.value.display) {
+                    Text("Automatic").tag(IslandDisplay.automatic)
+                    Text("Main display").tag(IslandDisplay.main)
+                    Text("All displays").tag(IslandDisplay.all)
+                    Divider()
+                    ForEach(displayChoices, id: \.self) { choice in
+                        if case .one(_, let name) = choice {
+                            Text(displays.contains(choice) ? name : "\(name) (not connected)").tag(choice)
+                        }
+                    }
+                } label: {
+                    Text("Show on")
+                    Text("Automatic picks the notch, or the main display.")
+                }
                 Toggle("Open on hover", isOn: $settings.value.openOnHover)
                 Toggle(isOn: threadActions) {
                     Text("Snooze and settle threads")
@@ -156,6 +212,20 @@ private struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 420)
         .fixedSize(horizontal: false, vertical: true)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            displays = Self.connectedDisplays()
+        }
+    }
+
+    private static func connectedDisplays() -> [IslandDisplay] {
+        NSScreen.screens.compactMap { screen in screen.uuid.map { .one(id: $0, name: screen.localizedName) } }
+    }
+
+    /// The connected displays, plus the chosen one when it's not connected, so the picker still shows it.
+    private var displayChoices: [IslandDisplay] {
+        let chosen = settings.value.display
+        guard case .one = chosen, !displays.contains(chosen) else { return displays }
+        return displays + [chosen]
     }
 
     private func providerShown(_ id: String) -> Binding<Bool> {

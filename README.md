@@ -39,7 +39,12 @@ Changes apply immediately and are saved in UserDefaults (`defaults delete local.
 
 - **Limits:** which window the collapsed island shows (5-hour, weekly or lowest), quota left or used, the warn (amber) and critical (red) thresholds, and which providers to show.
 - **Threads:** show working threads, threads waiting on you, idle threads, and how many faces per group.
-- **Behaviour:** open on hover instead of click, snooze and settle threads (on by default), and launch at login.
+- **Behaviour:** which displays show the island, open on hover instead of click, snooze and settle threads (on by default), and launch at login.
+
+With more than one display, Settings → Show on picks where the island hangs: Automatic (the display with the
+notch, or else the main display), the main display, every display, or one display you choose. A chosen display
+that's not connected falls back to Automatic until it's back. With an island on every display, opening one
+closes the others.
 
 Faces follow how much a thread needs you. Needs you (amber pulse), failed, replied (unread result) and
 idle (your turn) are in full colour; working threads are greyed out with a spinning ring, since they need
