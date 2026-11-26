@@ -186,12 +186,18 @@ final class T3Reader: @unchecked Sendable {
                                    resetsAt: date(w.resetsAt))
             }
             if windows.isEmpty {
-                guard let unavailable = limits.unavailable, unavailable.reason != "unsupported" else { continue }
-                // A failed check blanks T3's cache; keep the last values seen instead of dropping the card.
-                let previous = providerCache.value.first { $0.id == id && !$0.windows.isEmpty }
-                windows = previous?.windows ?? []
-                checkedAt = previous?.checkedAt
-                note = unavailable.message ?? "T3 could not check these limits."
+                guard let unavailable = limits.unavailable else { continue }
+                if unavailable.reason == "unsupported" {
+                    // Limits T3 can't read with this sign-in. Show its hint, such as "Sign in with Google…", if any.
+                    guard let message = unavailable.message else { continue }
+                    note = message
+                } else {
+                    // A failed check blanks T3's cache; keep the last values seen instead of dropping the card.
+                    let previous = providerCache.value.first { $0.id == id && !$0.windows.isEmpty }
+                    windows = previous?.windows ?? []
+                    checkedAt = previous?.checkedAt
+                    note = unavailable.message ?? "T3 could not check these limits."
+                }
             }
             result.append(ProviderLimits(
                 id: id,
@@ -202,8 +208,8 @@ final class T3Reader: @unchecked Sendable {
                 note: note
             ))
         }
-        // Claude first, then Codex, then the rest by name.
-        let order = ["claudeAgent": 0, "codex": 1]
+        // Claude, Codex and Antigravity first, then the rest by name.
+        let order = ["claudeAgent": 0, "codex": 1, "antigravity": 2]
         result.sort { (order[$0.id] ?? 9, $0.name) < (order[$1.id] ?? 9, $1.name) }
         providerCache = (stamp, result)
         return result

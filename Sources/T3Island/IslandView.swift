@@ -223,56 +223,12 @@ private struct ExpandedIsland: View {
             VStack(alignment: .leading, spacing: 10) {
                 header(threads).frame(height: headerHeight)
 
-                if let problem = store.problem {
-                    Text(problem)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.failed)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    SectionHeader(title: "Limits", isOpen: isOpen(.limits)) { toggle(.limits) }
-                    if isOpen(.limits) {
-                        LimitsGrid(providers: settings.value.visible(store.providers), settings: settings.value, now: now)
-                    }
-                }
-
-                Rectangle().fill(Theme.hairline).frame(height: 1)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    if waiting.isEmpty && working.isEmpty && snoozed.isEmpty {
-                        Text("No open threads")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.muted)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                    }
-                    if !waiting.isEmpty {
-                        SectionHeader(title: "Waiting on you", count: waiting.count, isOpen: isOpen(.waiting)) {
-                            toggle(.waiting)
-                        }
-                        ForEach(waiting.prefix(waitingShown)) { thread in
-                            // A question needs an answer in T3, so it gets no shortcuts here.
-                            row(thread, now: now, actions: thread.mood == .needsYou ? .none : .organize)
-                        }
-                    }
-                    if !working.isEmpty {
-                        SectionHeader(title: "Working", count: working.count, isOpen: isOpen(.working)) {
-                            toggle(.working)
-                        }
-                        .padding(.top, waiting.isEmpty ? 0 : 6)
-                        ForEach(working.prefix(workingShown)) { thread in
-                            row(thread, now: now, actions: .none)
-                        }
-                    }
-                    if let wake = snoozed.compactMap(\.snoozedUntil).min() {
-                        SectionHeader(title: "Snoozed", count: snoozed.count,
-                                      detail: "back in \(Format.duration(wake.timeIntervalSince(now)))",
-                                      isOpen: isOpen(.snoozed)) { toggle(.snoozed) }
-                            .padding(.top, waiting.isEmpty && working.isEmpty ? 0 : 6)
-                        ForEach(snoozed.prefix(snoozedShown)) { thread in
-                            row(thread, now: now, actions: .wake)
-                        }
+                // Limits and threads scroll once they'd push the island past the bottom of the screen.
+                ScrollWhenTall {
+                    VStack(alignment: .leading, spacing: 10) {
+                        middle(waiting: waiting, working: working, snoozed: snoozed, now: now,
+                               waitingShown: waitingShown, workingShown: workingShown,
+                               snoozedShown: snoozedShown)
                     }
                 }
 
@@ -294,6 +250,63 @@ private struct ExpandedIsland: View {
                 }
             }
             .padding(.bottom, 12)
+        }
+    }
+
+    @ViewBuilder
+    private func middle(waiting: [T3Thread], working: [T3Thread], snoozed: [T3Thread], now: Date,
+                        waitingShown: Int, workingShown: Int, snoozedShown: Int) -> some View {
+        if let problem = store.problem {
+            Text(problem)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.failed)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+
+        VStack(alignment: .leading, spacing: 6) {
+            SectionHeader(title: "Limits", isOpen: isOpen(.limits)) { toggle(.limits) }
+            if isOpen(.limits) {
+                LimitsGrid(providers: settings.value.visible(store.providers), settings: settings.value, now: now)
+            }
+        }
+
+        Rectangle().fill(Theme.hairline).frame(height: 1)
+
+        VStack(alignment: .leading, spacing: 2) {
+            if waiting.isEmpty && working.isEmpty && snoozed.isEmpty {
+                Text("No open threads")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.muted)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+            }
+            if !waiting.isEmpty {
+                SectionHeader(title: "Waiting on you", count: waiting.count, isOpen: isOpen(.waiting)) {
+                    toggle(.waiting)
+                }
+                ForEach(waiting.prefix(waitingShown)) { thread in
+                    // A question needs an answer in T3, so it gets no shortcuts here.
+                    row(thread, now: now, actions: thread.mood == .needsYou ? .none : .organize)
+                }
+            }
+            if !working.isEmpty {
+                SectionHeader(title: "Working", count: working.count, isOpen: isOpen(.working)) {
+                    toggle(.working)
+                }
+                .padding(.top, waiting.isEmpty ? 0 : 6)
+                ForEach(working.prefix(workingShown)) { thread in
+                    row(thread, now: now, actions: .none)
+                }
+            }
+            if let wake = snoozed.compactMap(\.snoozedUntil).min() {
+                SectionHeader(title: "Snoozed", count: snoozed.count,
+                              detail: "back in \(Format.duration(wake.timeIntervalSince(now)))",
+                              isOpen: isOpen(.snoozed)) { toggle(.snoozed) }
+                    .padding(.top, waiting.isEmpty && working.isEmpty ? 0 : 6)
+                ForEach(snoozed.prefix(snoozedShown)) { thread in
+                    row(thread, now: now, actions: .wake)
+                }
+            }
         }
     }
 
@@ -346,6 +359,35 @@ private struct ExpandedIsland: View {
     }
 }
 
+/// Its content at full height when that fits, else scrolling in the height offered. Offscreen previews draw
+/// the content unscrolled, since ImageRenderer can't draw a ScrollView.
+private struct ScrollWhenTall<Content: View>: View {
+    @ViewBuilder let content: Content
+    @Environment(\.usesAppKitViews) private var usesAppKitViews
+
+    var body: some View {
+        if usesAppKitViews {
+            // No scroll bar: with "always show" scroll bars it would narrow the cards; the cut-off row shows there's more.
+            HugHeight { ScrollView { content }.scrollIndicators(.never) }
+        } else {
+            content
+        }
+    }
+}
+
+/// Takes its content's ideal height, up to the height it's offered, so a ScrollView in it hugs short content.
+private struct HugHeight: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let ideal = content.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? ideal.width, height: min(ideal.height, proposal.height ?? .infinity))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+    }
+}
+
 private struct LimitsGrid: View {
     let providers: [ProviderLimits]
     let settings: IslandSettings
@@ -378,6 +420,22 @@ private struct LimitCard: View {
     let settings: IslandSettings
     let now: Date
 
+    /// Antigravity labels every window "Gemini Argon · 5-hour"; that's too long for a card, so when all labels
+    /// read "family · window", the family becomes a heading over its windows.
+    private var familyGroups: [(family: String, windows: [(window: LimitWindow, label: String)])]? {
+        let split = provider.windows.map { ($0, $0.label.components(separatedBy: " · ")) }
+        guard !split.isEmpty, split.allSatisfy({ $0.1.count == 2 }) else { return nil }
+        var groups: [(family: String, windows: [(window: LimitWindow, label: String)])] = []
+        for (window, parts) in split {
+            if let i = groups.firstIndex(where: { $0.family == parts[0] }) {
+                groups[i].windows.append((window, parts[1]))
+            } else {
+                groups.append((parts[0], [(window, parts[1])]))
+            }
+        }
+        return groups
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 5) {
@@ -400,8 +458,21 @@ private struct LimitCard: View {
                     .foregroundStyle(Theme.needsYou)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            ForEach(provider.windows) { window in
-                LimitBar(window: window, settings: settings, now: now)
+            if let groups = familyGroups {
+                ForEach(groups, id: \.family) { group in
+                    Text(group.family)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                        .padding(.top, 2)
+                    ForEach(group.windows, id: \.window.id) { item in
+                        LimitBar(window: item.window, label: item.label, settings: settings, now: now)
+                    }
+                }
+            } else {
+                ForEach(provider.windows) { window in
+                    LimitBar(window: window, label: window.label, settings: settings, now: now)
+                }
             }
         }
         .padding(10)
@@ -412,6 +483,7 @@ private struct LimitCard: View {
 
 private struct LimitBar: View {
     let window: LimitWindow
+    let label: String
     let settings: IslandSettings
     let now: Date
 
@@ -420,7 +492,7 @@ private struct LimitBar: View {
         let shown = settings.shown(left)
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(window.label)
+                Text(label)
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.secondary)
                     .lineLimit(1)

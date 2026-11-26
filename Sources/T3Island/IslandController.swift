@@ -13,8 +13,10 @@ final class IslandController: NSObject {
     private var monitors: [Any] = []
     private var displayChange: AnyCancellable?
 
-    /// Big enough for the expanded island plus its shadow; the transparent rest ignores the mouse.
-    private static let panelSize = CGSize(width: IslandView.expandedWidth + 80, height: 720)
+    /// Wide enough for the expanded island plus its shadow; the transparent rest ignores the mouse.
+    private static let panelWidth = IslandView.expandedWidth + 80
+    /// Kept clear above the Dock or the bottom of the screen; the island scrolls rather than reach it.
+    private static let bottomMargin: CGFloat = 12
 
     init(store: Store, settings: SettingsStore) {
         self.store = store
@@ -97,7 +99,8 @@ final class IslandController: NSObject {
             )
         }
 
-        let size = Self.panelSize
+        // The panel reaches down to the usable area's bottom, which caps how tall the expanded island grows.
+        let size = CGSize(width: Self.panelWidth, height: frame.maxY - screen.visibleFrame.minY - Self.bottomMargin)
         island.panel.setFrame(
             NSRect(x: frame.midX - size.width / 2, y: frame.maxY - size.height, width: size.width, height: size.height),
             display: true

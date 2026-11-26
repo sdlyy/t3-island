@@ -30,7 +30,11 @@ enum Theme {
 
     static func accent(_ provider: ProviderLimits) -> Color {
         if let hex = provider.accentHex { return Color(hex: hex) }
-        return provider.id == "claudeAgent" ? Color(hex: "#E8875B") : secondary
+        switch provider.id {
+        case "claudeAgent": return Color(hex: "#E8875B")
+        case "antigravity": return Color(hex: "#9B8AFB")
+        default: return secondary
+        }
     }
 }
 
