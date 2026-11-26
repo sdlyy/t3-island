@@ -13,12 +13,13 @@ middle of the menu bar, showing your T3 Code threads and the usage limits of you
 
 - **Compact:** on the left, faces for threads waiting on you (questions, failures, fresh replies and
   idle unsettled threads), then a divider, then the working threads, up to 3 faces each plus a count.
-  On the right, one ring per provider (Claude, Codex) with the quota left in its 5-hour window
-  (100% = untouched, 0% = used up); Settings can switch this to the weekly or the lowest window. The number turns amber at 40% left and red at 15%.
+  On the right, one ring per provider (Claude, Codex, Antigravity…) with the quota left in its 5-hour window
+  (100% = untouched, 0% = used up; for Antigravity, the model family with the least left); Settings can switch this to the weekly or the lowest window. The number turns amber at 40% left and red at 15%.
   On a display without a notch it sits in the middle of the menu bar:
 
   <img src="docs/compact.png" alt="The compact island in the middle of a menu bar on a display without a notch">
-- **Expanded:** click the island. It shows a card per provider (session and weekly windows, time to reset),
+- **Expanded:** click the island. It shows a card per provider (session and weekly windows, time to reset;
+  Antigravity's grouped by model family, and a sign-in hint for a provider whose limits T3 can't read yet),
   then the threads in sections: waiting on you, working (up to 3 working rows are always kept) and snoozed.
   Under each title, a live line shows what the thread is saying or doing: its latest step while it works
   (`$ swift build`, "Edited Store.swift", "Thinking…"), its question, its error, or the start of its last
@@ -80,7 +81,7 @@ The app reads T3 Code's local state. Its only network calls go to T3's own serve
 
 | What | Where |
 | --- | --- |
-| Usage limits | `~/.t3/caches/<provider>.json` → `usageLimits`, which T3 refreshes from the Claude and Codex CLIs |
+| Usage limits | `~/.t3/caches/<provider>.json` → `usageLimits`, which T3 refreshes from the Claude and Codex CLIs and Antigravity's Google sign-in |
 | Threads, runs, pending questions, running agents, watched pull requests | `~/.t3/userdata/statev2.sqlite`, opened read-only and polled every 2 s |
 | Live lines | The newest steps of each thread's latest run in the same database, read only while the dropdown is open |
 | Thread links | `t3code://threads/<environment-id>/<thread-id>` |
